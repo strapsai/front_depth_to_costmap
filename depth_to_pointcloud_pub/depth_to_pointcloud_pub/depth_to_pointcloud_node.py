@@ -143,22 +143,22 @@ class DepthToPointCloudNode(Node):
             self.clouds = pts_tf
         else:
             self.clouds = np.vstack([self.clouds, pts_tf])
-        self.clouds = self.voxel_downsample_mean(self.clouds, 0.1)
+        #self.clouds = self.voxel_downsample_mean(self.clouds, 0.1)
         #self.clouds = self.voxel_downsample_max_elevation_vec(self.clouds, 0.05)
-        self.clouds = self.remove_far_points(self.clouds, center, 7)
-        nm = self.estimation_normals(self.clouds) # fast, but large noise
+        #self.clouds = self.remove_far_points(self.clouds, center, 7)
+        #nm = self.estimation_normals(self.clouds) # fast, but large noise
         #nm = self.estimate_normals_half_random_open3d(self.clouds) # too slow, more than 4,000ms
-        og = self.pointcloud_to_occupancy_grid(msg_left.header.stamp, 
-                                               self.origin_frame, 
-                                               self.clouds,
-                                               resolution = 0.1,
-                                               grid_size = 100,
-                                               center_xy=(pos.x, pos.y),
-                                               normals = nm)
+        #og = self.pointcloud_to_occupancy_grid(msg_left.header.stamp, 
+        #                                       self.origin_frame, 
+        ##                                       self.clouds,
+        #                                       resolution = 0.1,
+        #                                       grid_size = 100,
+        #                                       center_xy=(pos.x, pos.y),
+        #                                       normals = nm)
                                                
         pc = self._build_pc(msg_left.header.stamp, self.origin_frame, self.clouds) #Only for display
         self.pub_accum.publish(pc)
-        self.pub_occup.publish(og)
+        #self.pub_occup.publish(og)
         self.get_logger().info("------------------------------------------\n")
         # -----------------------------------------------------------
                 
