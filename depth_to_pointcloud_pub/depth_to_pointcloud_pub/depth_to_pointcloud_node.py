@@ -12,6 +12,7 @@ from ament_index_python.packages import get_package_share_directory
 from geometry_msgs.msg import TransformStamped
 from tf2_ros import Buffer, TransformListener, TransformBroadcaster
 
+from cv_bridge import CvBridge
 from transforms3d.quaternions import quat2mat
 
 ## 여러 토픽 동기화용
@@ -38,62 +39,60 @@ def measure_time(func):
     
 # ────────────────────── utils ──────────────────────
 def load_extrinsic_matrix(yaml_name: str, key: str) -> np.ndarray:
-    """
-    config/*.yaml 파일에서 key에 해당하는 4×4 행렬을 읽어온 뒤 numpy 배열로 반환
-    """
-    pkg = get_package_share_directory("depth_to_pointcloud_pub")        ## 패키지 경로 찾기
+    pkg = get_package_share_directory("depth_to_pointcloud_pub")
     with open(os.path.join(pkg, "config", yaml_name), "r", encoding="utf-8") as f:
         return np.array(yaml.safe_load(f)[key]["Matrix"]).reshape(4, 4)
 
 # ────────────────────── main node ──────────────────────
 class DepthToPointCloudNode(Node):
     def __init__(self):
-        super().__init__("depth_to_pointcloud_node")  ## 노드 이름 등록
+        super().__init__("depth_to_pointcloud_node")
 
-        # 기본 설정 ---------------------------------------------------------
+        # Basic Topic Configuration --------------------------------------------------------
         self.prefixes = ["frontleft", "frontright"]
         self.depth_base = "/spot1/base/spot/depth"
         self.body_frame = "spot1/base/spot/body"
         self.origin_frame = "spot1/base/spot/odom"    # iwshim. 25.05.30
         self.odom_topic = "/spot1/base/spot/odometry" # iwshim. 25.05.30
-        self.merge_topic = "/spot1/base/spot/depth/merge_front"
         self.bridge = CvBridge()
-        
-        # Accumulation Parmas, iwshim 25.05.30
+
+        # Accumulation Parameters and Published Topics, iwshim 25.05.30
         self.clouds = np.zeros((1,3))
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
+        self.merge_topic = "/spot1/base/spot/depth/merge_front"
         self.accum_topic = "/spot1/base/spot/depth/accum_front"
         self.occup_topic = "/spot1/base/spot/depth/occup_front"
         # -----------------------------------------------------------
         
-        # CameraInfo → K 행렬 캐시 ------------------------------------------
+        # CameraInfo → K Matrix Caching ------------------------------------------
         self.K: Dict[str, Optional[np.ndarray]] = {p: None for p in self.prefixes}
 
-        # 고정 extrinsic (cam → body) ---------------------------------------
+        # Rigid extrinsic (cam → body) ---------------------------------------
         self.extr = {
             "frontleft":  load_extrinsic_matrix("frontleft_info.yaml",  "body_to_frontleft"),
             "frontright": load_extrinsic_matrix("frontright_info.yaml", "body_to_frontright"),
         }
 
-        # CameraInfo 구독 ----------------------------------------------------
+        # Subscriber for CameraInfo ------------------------------------
         for p in self.prefixes:
             self.create_subscription(
                 CameraInfo,                                    ## 타입
                 f"{self.depth_base}/{p}/camera_info",          ## 토픽 이름
                 lambda m, pr=p: self._camera_info_cb(m, pr),   ## 콜백 (prefix 캡쳐)
                 10)                                                     ## 큐 길이
-                    
-        # Depth Image 구독: message_filters 로 동기화 -----------------------
+
+        # Subscriber for depths and odometry ------------------------------------
         self.sub_left  = Subscriber(self, Image, f"{self.depth_base}/frontleft/image")
         self.sub_right = Subscriber(self, Image, f"{self.depth_base}/frontright/image")
         self.sub_odom  = Subscriber(self, Odometry, self.odom_topic) # iwshim. 25.05.30
         
+        # Time Synchronization ------------------------------------------------
         self.sync = ApproximateTimeSynchronizer(
-            [self.sub_left, self.sub_right, self.sub_odom],  ## 동기화할 Subscriber 리스트, # iwshim. 25.05.30
-            queue_size=10,                    ## 내부 버퍼 크기
-            slop=0.05)                        ## 최대 허용 시간차 (초)  = 50 ms
-        self.sync.registerCallback(self._synced_depth_cb)  ## 두 이미지가 짝 맞으면 호출
+            [self.sub_left, self.sub_right, self.sub_odom], # iwshim. 25.05.30
+            queue_size=10,                    
+            slop=0.05)                        ## 50 ms
+        self.sync.registerCallback(self._synced_depth_cb) 
 
         # Only for debugging 결과 PointCloud2 퍼블리셔 -----------------------------------------
         self.pub_merge = self.create_publisher(PointCloud2, self.merge_topic, 10)
@@ -144,8 +143,8 @@ class DepthToPointCloudNode(Node):
             self.clouds = pts_tf
         else:
             self.clouds = np.vstack([self.clouds, pts_tf])
-        #self.clouds = self.voxel_downsample_mean(self.clouds, 0.1)
-        self.clouds = self.voxel_downsample_max_elevation_vec(self.clouds, 0.05)
+        self.clouds = self.voxel_downsample_mean(self.clouds, 0.1)
+        #self.clouds = self.voxel_downsample_max_elevation_vec(self.clouds, 0.05)
         self.clouds = self.remove_far_points(self.clouds, center, 7)
         nm = self.estimation_normals(self.clouds) # fast, but large noise
         #nm = self.estimate_normals_half_random_open3d(self.clouds) # too slow, more than 4,000ms
