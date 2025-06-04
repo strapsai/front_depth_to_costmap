@@ -141,8 +141,10 @@ class DepthToPointCloudNode(Node):
 
         if self.clouds.shape[0] == 1:
             self.clouds = pts_tf
+            print(self.clouds[0])
         else:
             self.clouds = np.vstack([self.clouds, pts_tf])
+            print(self.clouds[0])
         #self.clouds = self.voxel_downsample_mean(self.clouds, 0.1)
         #self.clouds = self.voxel_downsample_max_elevation_vec(self.clouds, 0.05)
         #self.clouds = self.remove_far_points(self.clouds, center, 7)
