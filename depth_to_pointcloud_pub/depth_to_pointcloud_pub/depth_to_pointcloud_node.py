@@ -52,7 +52,7 @@ class DepthToPointCloudNode(Node):
         self.prefixes = ["frontleft", "frontright"]
         self.depth_base = "/spot1/base/spot/depth"
         self.body_frame = "spot1/base/spot/body"
-        self.origin_frame = "spot1/base/spot/odom"    # iwshim. 25.05.30
+        self.odom_frame = "spot1/base/spot/odom"    # iwshim. 25.05.30
         self.odom_topic = "/spot1/base/spot/odometry" # iwshim. 25.05.30
         self.bridge = CvBridge()
 
@@ -90,8 +90,8 @@ class DepthToPointCloudNode(Node):
         # Time Synchronization ------------------------------------------------
         self.sync = ApproximateTimeSynchronizer(
             [self.sub_left, self.sub_right, self.sub_odom], # iwshim. 25.05.30
-            queue_size=50,                    
-            slop=0.15)                        ## 50 ms
+            queue_size=10,                    
+            slop=0.05)                        ## 50 ms
         self.sync.registerCallback(self._synced_depth_cb) 
 
         # Only for debugging 결과 PointCloud2 퍼블리셔 -----------------------------------------
@@ -118,7 +118,7 @@ class DepthToPointCloudNode(Node):
         # iwshim. 25.05.30
         try:
             trans = self.tf_buffer.lookup_transform(
-                self.origin_frame, # target frame
+                self.odom_frame, # target frame
                 self.body_frame, # input frame id
                 rclpy.time.Time(),
                 timeout = rclpy.duration.Duration(seconds = 0.1)
@@ -147,10 +147,7 @@ class DepthToPointCloudNode(Node):
         #self.clouds = self.voxel_downsample_mean(self.clouds, 0.1)
         self.clouds = self.voxel_downsample_max_elevation_vec(self.clouds, 0.05)
         self.clouds = self.remove_far_points(self.clouds, center, 7)
-        print(T)
-        print("\n")
-        print(self.clouds.shape[0])
-        time.sleep(0.1)
+        
         #nm = self.estimation_normals(self.clouds) # fast, but large noise
         #nm = self.estimate_normals_half_random_open3d(self.clouds) # too slow, more than 4,000ms
         #og = self.pointcloud_to_occupancy_grid(msg_left.header.stamp, 
@@ -161,7 +158,7 @@ class DepthToPointCloudNode(Node):
         #                                       center_xy=(pos.x, pos.y),
         #                                       normals = nm)
                                                
-        pc = self._build_pc(msg_left.header.stamp, self.origin_frame, self.clouds) #Only for display
+        pc = self._build_pc(msg_left.header.stamp, self.odom_frame, self.clouds) #Only for display
         self.pub_accum.publish(pc)
         #self.pub_occup.publish(og)
         self.get_logger().info("------------------------------------------\n")
