@@ -89,7 +89,7 @@ class DepthToPointCloudNode(Node):
         
         # Time Synchronization ------------------------------------------------
         self.sync = ApproximateTimeSynchronizer(
-            [self.sub_left, self.sub_right],#, self.sub_odom], # iwshim. 25.05.30
+            [self.sub_left, self.sub_right, self.sub_odom], # iwshim. 25.05.30
             queue_size=30,                    
             slop=0.15)                        ## 50 ms
         self.sync.registerCallback(self._synced_depth_cb) 
@@ -106,28 +106,38 @@ class DepthToPointCloudNode(Node):
         self.get_logger().info(f"[{prefix}] CameraInfo OK\n", once=True)
 
     # ───────────── 동기화된 Depth 이미지 콜백 ─────────────
-    def _synced_depth_cb(self, msg_left: Image, msg_right: Image):#, msg_odom: Odometry):
+    def _synced_depth_cb(self, msg_left: Image, msg_right: Image, msg_odom: Odometry):
         """
         frontleft·frontright 깊이 이미지가 거의 동시에 도착하면 호출
         두 이미지를 각각 포인트로 변환 후 합쳐 하나의 PointCloud2로 publish
         """
         # iwshim. 25.05.30
         stamp = rclpy.time.Time.from_msg(msg_left.header.stamp)
+
         try:
+            # 1. 바로 TF가 있으면 interpolation 포함해서 반환됨 (내부적으로 지원)
             trans = self.tf_buffer.lookup_transform(
                 self.odom_frame,
                 self.body_frame,
                 stamp,
                 timeout=rclpy.duration.Duration(seconds=0.1)
             )
+            self.get_logger().info(f"TF found for msg_left at {stamp.nanoseconds * 1e-9:.3f}s")
         except Exception as e:
-            self.get_logger().warning(f"TF failed at {stamp.nanoseconds * 1e-9:.3f}s: {e}")
-            trans = self.tf_buffer.lookup_transform(
-                self.odom_frame,
-                self.body_frame,
-                rclpy.time.Time(),  # 최신값
-                timeout=rclpy.duration.Duration(seconds=0.05)
-            )
+            self.get_logger().warning(f"TF exact lookup failed: {e}")
+            # 2. fallback: 최신 TF로라도 변환 (정확도는 떨어질 수 있음)
+            try:
+                trans = self.tf_buffer.lookup_transform(
+                    self.odom_frame,
+                    self.body_frame,
+                    rclpy.time.Time(),  # 최신 TF
+                    timeout=rclpy.duration.Duration(seconds=0.05)
+                )
+                self.get_logger().warning(f"Using latest TF as fallback")
+            except Exception as e2:
+                self.get_logger().error(f"TF lookup totally failed: {e2}")
+                return
+
     # -----------------------------------------------------------
     
         pts_left  = self._depth_to_pts(msg_left,  "frontleft")
