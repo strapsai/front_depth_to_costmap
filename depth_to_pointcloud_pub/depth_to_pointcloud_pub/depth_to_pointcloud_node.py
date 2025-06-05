@@ -112,20 +112,23 @@ class DepthToPointCloudNode(Node):
         두 이미지를 각각 포인트로 변환 후 합쳐 하나의 PointCloud2로 publish
         """
         # iwshim. 25.05.30
-        #odom_time = rclpy.time.Time.from_msg(msg_odom.header.stamp)
-        stamp = rclpy.time.Time.from_msg(msg_odom.header.stamp)
-
+        stamp = rclpy.time.Time.from_msg(msg_left.header.stamp)
         try:
             trans = self.tf_buffer.lookup_transform(
-                self.odom_frame, # target frame
-                self.body_frame, # input frame id
-                stamp - rclpy.duration.Duration(seconds=0.1),
-                timeout = rclpy.duration.Duration(seconds = 0.1)
+                self.odom_frame,
+                self.body_frame,
+                stamp,
+                timeout=rclpy.duration.Duration(seconds=0.1)
             )
         except Exception as e:
-            self.get_logger().warning(f"TF transform failed: {e}\n")
-            return
-        # -----------------------------------------------------------
+            self.get_logger().warning(f"TF failed at {stamp.nanoseconds * 1e-9:.3f}s: {e}")
+            trans = self.tf_buffer.lookup_transform(
+                self.odom_frame,
+                self.body_frame,
+                rclpy.time.Time(),  # 최신값
+                timeout=rclpy.duration.Duration(seconds=0.05)
+            )
+    # -----------------------------------------------------------
     
         pts_left  = self._depth_to_pts(msg_left,  "frontleft")
         pts_right = self._depth_to_pts(msg_right, "frontright")
