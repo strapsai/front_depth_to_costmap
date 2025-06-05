@@ -182,6 +182,7 @@ class DepthToPointCloudNode(Node):
         
     
     # ───────────── depth Image → 3-D 포인트 변환 ─────────────
+    @measure_time
     def _depth_to_pts(self, msg: Image, prefix: str) -> Optional[np.ndarray]:
         K = self.K[prefix]
 
