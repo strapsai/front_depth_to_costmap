@@ -113,13 +113,13 @@ class DepthToPointCloudNode(Node):
         """
         # iwshim. 25.05.30
         #odom_time = rclpy.time.Time.from_msg(msg_odom.header.stamp)
-        ts = rclpy.time.Time.from_msg(msg_odom.header.stamp) - rclpy.duration.Duration(seconds=0.05)
+        stamp = rclpy.time.Time.from_msg(msg_odom.header.stamp)
 
         try:
             trans = self.tf_buffer.lookup_transform(
                 self.odom_frame, # target frame
                 self.body_frame, # input frame id
-                ts,
+                stamp - rclpy.duration.Duration(seconds=0.05),
                 timeout = rclpy.duration.Duration(seconds = 0.1)
             )
         except Exception as e:
