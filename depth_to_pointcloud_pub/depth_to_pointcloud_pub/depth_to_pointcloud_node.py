@@ -119,7 +119,7 @@ class DepthToPointCloudNode(Node):
             trans = self.tf_buffer.lookup_transform(
                 self.odom_frame, # target frame
                 self.body_frame, # input frame id
-                stamp - rclpy.duration.Duration(seconds=0.05),
+                stamp - rclpy.duration.Duration(seconds=0.1),
                 timeout = rclpy.duration.Duration(seconds = 0.1)
             )
         except Exception as e:
