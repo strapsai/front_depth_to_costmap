@@ -131,7 +131,7 @@ class DepthToPointCloudNode(Node):
 
         # 4x4 Transform matrix from msg_left.frame_id -> body_frame, iwshim. 25.05.30
         T = self.transform_to_matrix(trans)
-        pts_homo = np.hstack([pts_down, np.ones((pts.shape[0], 1))])
+        pts_homo = np.hstack([pts_down, np.ones((pts_down.shape[0], 1))])
         #self.get_logger().info( f"\nPTS shape: {pts_homo.shape[0]:d}, {pts_homo.shape[1]:d}\n" )
         pts_tf = (T @ pts_homo.T).T[:,:3]
         # -----------------------------------------------------------
