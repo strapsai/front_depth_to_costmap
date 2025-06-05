@@ -111,10 +111,6 @@ class DepthToPointCloudNode(Node):
         frontleft·frontright 깊이 이미지가 거의 동시에 도착하면 호출
         두 이미지를 각각 포인트로 변환 후 합쳐 하나의 PointCloud2로 publish
         """
-        pts_left  = self._depth_to_pts(msg_left,  "frontleft")
-        pts_right = self._depth_to_pts(msg_right, "frontright")
-        pts = np.vstack((pts_left, pts_right))           ## (N,3) 행렬 합치기 *속도 최적화시 Check Point.
-        
         # iwshim. 25.05.30
         try:
             trans = self.tf_buffer.lookup_transform(
@@ -127,7 +123,12 @@ class DepthToPointCloudNode(Node):
             self.get_logger().warning(f"TF transform failed: {e}\n")
             return
         # -----------------------------------------------------------
-        
+    
+        pts_left  = self._depth_to_pts(msg_left,  "frontleft")
+        pts_right = self._depth_to_pts(msg_right, "frontright")
+        pts = np.vstack((pts_left, pts_right))           ## (N,3) 행렬 합치기 *속도 최적화시 Check Point.
+    
+
         # 4x4 Transform matrix from msg_left.frame_id -> body_frame, iwshim. 25.05.30
         T = self.transform_to_matrix(trans)
         pts_homo = np.hstack([pts, np.ones((pts.shape[0], 1))])
