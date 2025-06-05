@@ -112,11 +112,12 @@ class DepthToPointCloudNode(Node):
         두 이미지를 각각 포인트로 변환 후 합쳐 하나의 PointCloud2로 publish
         """
         # iwshim. 25.05.30
+        odom_time = rclpy.time.Time.from_msg(msg_odom.header.stamp)
         try:
             trans = self.tf_buffer.lookup_transform(
                 self.odom_frame, # target frame
                 self.body_frame, # input frame id
-                rclpy.time.Time(),
+                odom_time,
                 timeout = rclpy.duration.Duration(seconds = 0.1)
             )
         except Exception as e:
@@ -127,7 +128,6 @@ class DepthToPointCloudNode(Node):
         pts_left  = self._depth_to_pts(msg_left,  "frontleft")
         pts_right = self._depth_to_pts(msg_right, "frontright")
         pts = np.vstack((pts_left, pts_right))           ## (N,3) 행렬 합치기 *속도 최적화시 Check Point.
-        pts_down = self.voxel_downsample_max_elevation_vec(pts, 0.05)
 
         # 4x4 Transform matrix from msg_left.frame_id -> body_frame, iwshim. 25.05.30
         T = self.transform_to_matrix(trans)
@@ -146,7 +146,7 @@ class DepthToPointCloudNode(Node):
         else:
             self.clouds = np.vstack([self.clouds, pts_tf])
         #self.clouds = self.voxel_downsample_mean(self.clouds, 0.1)
-        #self.clouds = self.voxel_downsample_max_elevation_vec(self.clouds, 0.05)
+        self.clouds = self.voxel_downsample_max_elevation_vec(self.clouds, 0.05)
         self.clouds = self.remove_far_points(self.clouds, center, 7)
         
         #nm = self.estimation_normals(self.clouds) # fast, but large noise
