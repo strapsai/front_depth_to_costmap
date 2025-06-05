@@ -136,7 +136,8 @@ class DepthToPointCloudNode(Node):
         # -----------------------------------------------------------
 
         # Accumulation, iwshim. 25.05.30
-        pos = msg_odom.pose.pose.position
+        #pos = msg_odom.pose.pose.position
+        pos = trans.transform.translation
         center = np.array([pos.x, pos.y, pos.z])
 
         if self.clouds.shape[0] == 1:
