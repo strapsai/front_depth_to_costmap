@@ -89,7 +89,7 @@ class DepthToPointCloudNode(Node):
         
         # Time Synchronization ------------------------------------------------
         self.sync = ApproximateTimeSynchronizer(
-            [self.sub_left, self.sub_right, self.sub_odom], # iwshim. 25.05.30
+            [self.sub_left, self.sub_right],#, self.sub_odom], # iwshim. 25.05.30
             queue_size=30,                    
             slop=0.15)                        ## 50 ms
         self.sync.registerCallback(self._synced_depth_cb) 
@@ -106,7 +106,7 @@ class DepthToPointCloudNode(Node):
         self.get_logger().info(f"[{prefix}] CameraInfo OK\n", once=True)
 
     # ───────────── 동기화된 Depth 이미지 콜백 ─────────────
-    def _synced_depth_cb(self, msg_left: Image, msg_right: Image, msg_odom: Odometry):
+    def _synced_depth_cb(self, msg_left: Image, msg_right: Image):#, msg_odom: Odometry):
         """
         frontleft·frontright 깊이 이미지가 거의 동시에 도착하면 호출
         두 이미지를 각각 포인트로 변환 후 합쳐 하나의 PointCloud2로 publish
