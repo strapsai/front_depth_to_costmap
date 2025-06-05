@@ -90,7 +90,7 @@ class DepthToPointCloudNode(Node):
         # Time Synchronization ------------------------------------------------
         self.sync = ApproximateTimeSynchronizer(
             [self.sub_left, self.sub_right, self.sub_odom], # iwshim. 25.05.30
-            queue_size=10,                    
+            queue_size=1,                    
             slop=0.05)                        ## 50 ms
         self.sync.registerCallback(self._synced_depth_cb) 
 
@@ -141,13 +141,15 @@ class DepthToPointCloudNode(Node):
 
         if self.clouds.shape[0] == 1:
             self.clouds = pts_tf
-            print(self.clouds.shape[0])
         else:
             self.clouds = np.vstack([self.clouds, pts_tf])
-            print(self.clouds.shape[0])
         #self.clouds = self.voxel_downsample_mean(self.clouds, 0.1)
-        #self.clouds = self.voxel_downsample_max_elevation_vec(self.clouds, 0.05)
-        #self.clouds = self.remove_far_points(self.clouds, center, 7)
+        self.clouds = self.voxel_downsample_max_elevation_vec(self.clouds, 0.05)
+        self.clouds = self.remove_far_points(self.clouds, center, 7)
+        print(trans)
+        print("\n")
+        print(self.clouds.shape[0])
+        
         #nm = self.estimation_normals(self.clouds) # fast, but large noise
         #nm = self.estimate_normals_half_random_open3d(self.clouds) # too slow, more than 4,000ms
         #og = self.pointcloud_to_occupancy_grid(msg_left.header.stamp, 
