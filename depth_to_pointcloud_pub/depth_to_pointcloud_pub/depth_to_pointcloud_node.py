@@ -90,8 +90,8 @@ class DepthToPointCloudNode(Node):
         # Time Synchronization ------------------------------------------------
         self.sync = ApproximateTimeSynchronizer(
             [self.sub_left, self.sub_right, self.sub_odom], # iwshim. 25.05.30
-            queue_size=5,                    
-            slop=0.1)                        ## 50 ms
+            queue_size=50,                    
+            slop=0.15)                        ## 50 ms
         self.sync.registerCallback(self._synced_depth_cb) 
 
         # Only for debugging 결과 PointCloud2 퍼블리셔 -----------------------------------------
@@ -146,10 +146,10 @@ class DepthToPointCloudNode(Node):
         #self.clouds = self.voxel_downsample_mean(self.clouds, 0.1)
         self.clouds = self.voxel_downsample_max_elevation_vec(self.clouds, 0.05)
         self.clouds = self.remove_far_points(self.clouds, center, 7)
-        print(trans)
+        print(T)
         print("\n")
         print(self.clouds.shape[0])
-        
+        time.sleep(0.1)
         #nm = self.estimation_normals(self.clouds) # fast, but large noise
         #nm = self.estimate_normals_half_random_open3d(self.clouds) # too slow, more than 4,000ms
         #og = self.pointcloud_to_occupancy_grid(msg_left.header.stamp, 
