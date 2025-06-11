@@ -133,7 +133,7 @@ class DepthToPointCloudNode(Node):
     
         self.clouds = pts
         self.clouds = self.voxel_downsample_mean(self.clouds, 0.1)
-        pc = self._build_pc(msg_left.header.stamp, self.odom_frame, self.clouds) #Only for display
+        pc = self._build_pc(msg_left.header.stamp, self.body_frame, self.clouds) #Only for display
         self.pub_accum.publish(pc)
         
 
