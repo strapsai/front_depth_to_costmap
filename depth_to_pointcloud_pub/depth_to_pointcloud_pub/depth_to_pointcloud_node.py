@@ -113,6 +113,7 @@ class DepthToPointCloudNode(Node):
 
     # ───────────── 동기화된 Costmap 콜백 ─────────────
     def _synced_costmap(self, msg_left: Image, msg_right: Image):
+        '''
         stamp = rclpy.time.Time.from_msg(msg_left.header.stamp)
         self.get_logger().warning("HIT THE DEPTH CALLBACK\n")
         try:
@@ -123,9 +124,9 @@ class DepthToPointCloudNode(Node):
                 timeout=rclpy.duration.Duration(seconds=0.1)
             )
         except Exception as e:
-            self.get_logger().warning(f"TF lookup failed at {stamp.nanoseconds*1e-9:.3f}s: {e}")
+            self.get_logger().error(f"TF lookup failed at {stamp.nanoseconds*1e-9:.3f}s: {e}")
             return
-        
+        '''
         pts_left  = self._depth_to_pts(msg_left,  "frontleft")
         pts_right = self._depth_to_pts(msg_right, "frontright")
         pts = np.vstack((pts_left, pts_right))           ## (N,3) 행렬 합치기 *속도 최적화시 Check Point.
