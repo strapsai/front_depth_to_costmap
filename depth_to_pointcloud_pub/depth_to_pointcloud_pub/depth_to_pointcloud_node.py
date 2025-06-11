@@ -130,14 +130,10 @@ class DepthToPointCloudNode(Node):
         pts_right = self._depth_to_pts(msg_right, "frontright")
         pts = np.vstack((pts_left, pts_right))           ## (N,3) 행렬 합치기 *속도 최적화시 Check Point.
 
-        # 4x4 Transform matrix from msg_left.frame_id -> body_frame, iwshim. 25.05.30
-        T = self.transform_to_matrix(trans)
-        pts_homo = np.hstack([pts, np.ones((pts.shape[0], 1))])
-        pts_tf = (T @ pts_homo.T).T[:,:3]
     
-        self.clouds = pts_tf
+        self.clouds = pts
         self.clouds = self.voxel_downsample_mean(self.clouds, 0.1)
-        pc = self._build_pc(msg_left.header.stamp, self.body_frame, self.clouds) #Only for display
+        pc = self._build_pc(msg_left.header.stamp, self.odom_frame, self.clouds) #Only for display
         self.pub_accum.publish(pc)
         
 
