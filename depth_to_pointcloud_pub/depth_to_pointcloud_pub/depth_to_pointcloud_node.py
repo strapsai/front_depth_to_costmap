@@ -93,7 +93,8 @@ class DepthToPointCloudNode(Node):
             [self.sub_left, self.sub_right, self.sub_pose], # iwshim. 25.05.30
             queue_size=30,                    
             slop=0.15)                        ## 50 ms
-        self.sync.registerCallback(self._synced_depth_cb) 
+        #self.sync.registerCallback(self._synced_depth_cb) 
+        self.sync.registerCallback(self._synced_costmap)
 
         # Only for debugging 결과 PointCloud2 퍼블리셔 -----------------------------------------
         self.pub_merge = self.create_publisher(PointCloud2, self.merge_topic, 10)
@@ -106,6 +107,11 @@ class DepthToPointCloudNode(Node):
         self.K[prefix] = np.array(msg.k).reshape(3, 3)   ## 내부 파라미터 저장
         self.get_logger().info(f"[{prefix}] CameraInfo OK\n", once=True)
 
+    # ───────────── 동기화된 Costmap 콜백 ─────────────
+    def _synced_costmap(self, msg_left: Image, msg_right: Image, msg_pose: PoseStamped):
+        stamp = rclpy.time.Time.from_msg(msg_left.header.stamp)
+        self.get_logger().warning("HIT THE DEPTH CALLBACK\n")
+        
     # ───────────── 동기화된 Depth 이미지 콜백 ─────────────
     def _synced_depth_cb(self, msg_left: Image, msg_right: Image, msg_odom: Odometry):
         """
