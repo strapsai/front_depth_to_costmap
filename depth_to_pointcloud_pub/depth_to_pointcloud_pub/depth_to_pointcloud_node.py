@@ -86,7 +86,7 @@ class DepthToPointCloudNode(Node):
         # Subscriber for depths and odometry ------------------------------------
         self.sub_left  = Subscriber(self, Image, f"{self.depth_base}/frontleft/image")
         self.sub_right = Subscriber(self, Image, f"{self.depth_base}/frontright/image")
-        self.sub_pose  = Subscriber(self, Odometry, self.odom_topic) # iwshim. 25.05.30
+        self.sub_odom  = Subscriber(self, Odometry, self.odom_topic) # iwshim. 25.05.30
         
         # Time Synchronization ------------------------------------------------
         #self.sync = ApproximateTimeSynchronizer(
