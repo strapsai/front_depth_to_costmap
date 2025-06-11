@@ -139,7 +139,7 @@ class DepthToPointCloudNode(Node):
                 return
 
     # -----------------------------------------------------------
-    
+        self.get_logger().warning("HIT THE DEPTH CALLBACK\n")
         pts_left  = self._depth_to_pts(msg_left,  "frontleft")
         pts_right = self._depth_to_pts(msg_right, "frontright")
         pts = np.vstack((pts_left, pts_right))           ## (N,3) 행렬 합치기 *속도 최적화시 Check Point.
