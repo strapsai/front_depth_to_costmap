@@ -89,11 +89,15 @@ class DepthToPointCloudNode(Node):
         self.sub_pose  = Subscriber(self, PoseStamped, self.body_frame) # iwshim. 25.05.30
         
         # Time Synchronization ------------------------------------------------
+        #self.sync = ApproximateTimeSynchronizer(
+        #    [self.sub_left, self.sub_right, self.sub_pose], # iwshim. 25.05.30
+        #    queue_size=30,                    
+        #    slop=0.15)                        ## 50 ms
+        #self.sync.registerCallback(self._synced_depth_cb)
         self.sync = ApproximateTimeSynchronizer(
-            [self.sub_left, self.sub_right, self.sub_pose], # iwshim. 25.05.30
-            queue_size=30,                    
-            slop=0.15)                        ## 50 ms
-        #self.sync.registerCallback(self._synced_depth_cb) 
+            [self.sub_left, self.sub_right], # iwshim. 25.05.30
+            queue_size=10,                    
+            slop=0.05)
         self.sync.registerCallback(self._synced_costmap)
 
         # Only for debugging 결과 PointCloud2 퍼블리셔 -----------------------------------------
@@ -108,10 +112,35 @@ class DepthToPointCloudNode(Node):
         self.get_logger().info(f"[{prefix}] CameraInfo OK\n", once=True)
 
     # ───────────── 동기화된 Costmap 콜백 ─────────────
-    def _synced_costmap(self, msg_left: Image, msg_right: Image, msg_pose: PoseStamped):
+    def _synced_costmap(self, msg_left: Image, msg_right: Image):
         stamp = rclpy.time.Time.from_msg(msg_left.header.stamp)
         self.get_logger().warning("HIT THE DEPTH CALLBACK\n")
+        try:
+            trans: TransformStamped = self.tf_buffer.lookup_transform(
+                self.odom_frame,      # source frame
+                self.body_frame,      # target frame
+                stamp,                # 동기화에 사용할 시간
+                timeout=rclpy.duration.Duration(seconds=0.1)
+            )
+        except Exception as e:
+            self.get_logger().warning(f"TF lookup failed at {stamp.nanoseconds*1e-9:.3f}s: {e}")
+            return
         
+        pts_left  = self._depth_to_pts(msg_left,  "frontleft")
+        pts_right = self._depth_to_pts(msg_right, "frontright")
+        pts = np.vstack((pts_left, pts_right))           ## (N,3) 행렬 합치기 *속도 최적화시 Check Point.
+
+        # 4x4 Transform matrix from msg_left.frame_id -> body_frame, iwshim. 25.05.30
+        T = self.transform_to_matrix(trans)
+        pts_homo = np.hstack([pts, np.ones((pts.shape[0], 1))])
+        pts_tf = (T @ pts_homo.T).T[:,:3]
+    
+        self.clouds = pts_tf
+        self.clouds = self.voxel_downsample_mean(self.clouds, 0.1)
+        pc = self._build_pc(msg_left.header.stamp, self.odom_frame, self.clouds) #Only for display
+        self.pub_accum.publish(pc)
+        
+
     # ───────────── 동기화된 Depth 이미지 콜백 ─────────────
     def _synced_depth_cb(self, msg_left: Image, msg_right: Image, msg_odom: Odometry):
         """
