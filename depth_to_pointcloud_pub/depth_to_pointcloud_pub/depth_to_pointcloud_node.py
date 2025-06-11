@@ -86,7 +86,7 @@ class DepthToPointCloudNode(Node):
         # Subscriber for depths and odometry ------------------------------------
         self.sub_left  = Subscriber(self, Image, f"{self.depth_base}/frontleft/image")
         self.sub_right = Subscriber(self, Image, f"{self.depth_base}/frontright/image")
-        self.sub_pose  = Subscriber(self, PoseStamped, self.body_frame) # iwshim. 25.05.30
+        self.sub_pose  = Subscriber(self, Odometry, self.odom_topic) # iwshim. 25.05.30
         
         # Time Synchronization ------------------------------------------------
         #self.sync = ApproximateTimeSynchronizer(
@@ -95,8 +95,8 @@ class DepthToPointCloudNode(Node):
         #    slop=0.15)                        ## 50 ms
         #self.sync.registerCallback(self._synced_depth_cb)
         self.sync = ApproximateTimeSynchronizer(
-            [self.sub_left, self.sub_right], # iwshim. 25.05.30
-            queue_size=30,                    
+            [self.sub_left, self.sub_right, self.sub_odom], # iwshim. 25.05.30
+            queue_size=50,                    
             slop=0.10)
         self.sync.registerCallback(self._synced_costmap)
 
@@ -112,10 +112,11 @@ class DepthToPointCloudNode(Node):
         self.get_logger().info(f"[{prefix}] CameraInfo OK\n", once=True)
 
     # ───────────── 동기화된 Costmap 콜백 ─────────────
-    def _synced_costmap(self, msg_left: Image, msg_right: Image):
+    def _synced_costmap(self, msg_left: Image, msg_right: Image, msg_odom: Odometry):
         
         stamp = rclpy.time.Time.from_msg(msg_left.header.stamp)
         self.get_logger().warning("HIT THE DEPTH CALLBACK\n")
+        '''
         try:
             trans: TransformStamped = self.tf_buffer.lookup_transform(
                 self.odom_frame,      # source frame
@@ -126,7 +127,7 @@ class DepthToPointCloudNode(Node):
         except Exception as e:
             self.get_logger().error(f"TF lookup failed at {stamp.nanoseconds*1e-9:.3f}s: {e}")
             return
-        
+        '''
         pts_left  = self._depth_to_pts(msg_left,  "frontleft")
         pts_right = self._depth_to_pts(msg_right, "frontright")
         pts = np.vstack((pts_left, pts_right))           ## (N,3) 행렬 합치기 *속도 최적화시 Check Point.
