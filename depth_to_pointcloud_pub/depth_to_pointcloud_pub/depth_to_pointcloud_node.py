@@ -96,8 +96,8 @@ class DepthToPointCloudNode(Node):
         #self.sync.registerCallback(self._synced_depth_cb)
         self.sync = ApproximateTimeSynchronizer(
             [self.sub_left, self.sub_right], # iwshim. 25.05.30
-            queue_size=60,                    
-            slop=0.05)
+            queue_size=30,                    
+            slop=0.10)
         self.sync.registerCallback(self._synced_costmap)
 
         # Only for debugging 결과 PointCloud2 퍼블리셔 -----------------------------------------
@@ -121,7 +121,7 @@ class DepthToPointCloudNode(Node):
                 self.odom_frame,      # source frame
                 self.body_frame,      # target frame
                 stamp,                # 동기화에 사용할 시간
-                timeout=rclpy.duration.Duration(seconds=0.5)
+                timeout=rclpy.duration.Duration(seconds=1.0)
             )
         except Exception as e:
             self.get_logger().error(f"TF lookup failed at {stamp.nanoseconds*1e-9:.3f}s: {e}")
