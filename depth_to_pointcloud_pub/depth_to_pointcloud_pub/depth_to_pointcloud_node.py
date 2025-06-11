@@ -134,7 +134,7 @@ class DepthToPointCloudNode(Node):
 
         pos = odom.pose.pose.position
         ori = odom.pose.pose.orientation
-        T = self.transform_to_matrix_from_pose(pos, ori)
+        T = self.transform_to_matrix(pos, ori)
         pts_tf = (T @ np.hstack([pts, np.ones((pts.shape[0],1))]).T).T[:,:3]
         
         self.clouds = pts_tf
