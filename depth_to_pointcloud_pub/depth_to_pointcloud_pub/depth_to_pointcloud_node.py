@@ -112,7 +112,7 @@ class DepthToPointCloudNode(Node):
         self.get_logger().info(f"[{prefix}] CameraInfo OK\n", once=True)
 
     # ───────────── 동기화된 Costmap 콜백 ─────────────
-    def _synced_costmap(self, msg_left: Image, msg_right: Image, msg_odom: Odometry):
+    def _synced_costmap(self, msg_left: Image, msg_right: Image, odom: Odometry):
         
         stamp = rclpy.time.Time.from_msg(msg_left.header.stamp)
         self.get_logger().warning("HIT THE DEPTH CALLBACK\n")
@@ -132,10 +132,14 @@ class DepthToPointCloudNode(Node):
         pts_right = self._depth_to_pts(msg_right, "frontright")
         pts = np.vstack((pts_left, pts_right))           ## (N,3) 행렬 합치기 *속도 최적화시 Check Point.
 
-    
-        self.clouds = pts
+        pos = odom.pose.pose.position
+        ori = odom.pose.pose.orientation
+        T = self.transform_to_matrix_from_pose(pos, ori)
+        pts_tf = (T @ np.hstack([pts, np.ones((pts.shape[0],1))]).T).T[:,:3]
+        
+        self.clouds = pts_tf
         self.clouds = self.voxel_downsample_mean(self.clouds, 0.1)
-        pc = self._build_pc(msg_left.header.stamp, self.body_frame, self.clouds) #Only for display
+        pc = self._build_pc(msg_left.header.stamp, self.odom_frame, self.clouds) #Only for display
         self.pub_accum.publish(pc)
         
 
@@ -444,7 +448,23 @@ class DepthToPointCloudNode(Node):
         T[:3, :3] = R
         #print(T)
         return T
-        
+    @staticmethod
+    def transform_to_matrix(position, orientation) -> np.ndarray:
+        T = np.eye(4)
+
+        T[0, 3] = position.x
+        T[1, 3] = position.y
+        T[2, 3] = position.z
+
+        quat = [orientation.w,
+                orientation.x,
+                orientation.y,
+                orientation.z]
+        R = transforms3d.quaternions.quat2mat(quat)
+
+        T[:3, :3] = R
+
+        return T
     # ───────────── numpy 포인트 → PointCloud2 메시지 ─────────────
     @staticmethod
     @measure_time
