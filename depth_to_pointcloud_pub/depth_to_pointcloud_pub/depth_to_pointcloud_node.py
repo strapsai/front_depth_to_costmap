@@ -14,6 +14,7 @@ from tf2_ros import Buffer, TransformListener, TransformBroadcaster
 
 from cv_bridge import CvBridge
 from transforms3d.quaternions import quat2mat
+from geometry_msgs.msg import PoseStamped
 
 ## 여러 토픽 동기화용
 from message_filters import Subscriber, ApproximateTimeSynchronizer
@@ -60,9 +61,9 @@ class DepthToPointCloudNode(Node):
         self.clouds = np.zeros((1,3))
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
-        self.merge_topic = "/spot1/base/spot/depth/merge_front"
-        self.accum_topic = "/spot1/base/spot/depth/accum_front"
-        self.occup_topic = "/spot1/base/spot/depth/occup_front"
+        self.pub_merge = "/spot1/base/spot/depth/merge_front"
+        self.pub_accum = "/spot1/base/spot/depth/accum_front"
+        self.pub_occup = "/spot1/base/spot/depth/occup_front"
         # -----------------------------------------------------------
         
         # CameraInfo → K Matrix Caching ------------------------------------------
@@ -85,11 +86,11 @@ class DepthToPointCloudNode(Node):
         # Subscriber for depths and odometry ------------------------------------
         self.sub_left  = Subscriber(self, Image, f"{self.depth_base}/frontleft/image")
         self.sub_right = Subscriber(self, Image, f"{self.depth_base}/frontright/image")
-        self.sub_odom  = Subscriber(self, Odometry, self.odom_topic) # iwshim. 25.05.30
+        self.sub_pose  = Subscriber(self, PoseStamped, self.body_frame) # iwshim. 25.05.30
         
         # Time Synchronization ------------------------------------------------
         self.sync = ApproximateTimeSynchronizer(
-            [self.sub_left, self.sub_right, self.sub_odom], # iwshim. 25.05.30
+            [self.sub_left, self.sub_right, self.sub_pose], # iwshim. 25.05.30
             queue_size=30,                    
             slop=0.15)                        ## 50 ms
         self.sync.registerCallback(self._synced_depth_cb) 
