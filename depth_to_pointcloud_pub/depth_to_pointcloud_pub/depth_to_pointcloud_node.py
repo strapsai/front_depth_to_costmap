@@ -61,9 +61,9 @@ class DepthToPointCloudNode(Node):
         self.clouds = np.zeros((1,3))
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
-        self.pub_merge = "/spot1/base/spot/depth/merge_front"
-        self.pub_accum = "/spot1/base/spot/depth/accum_front"
-        self.pub_occup = "/spot1/base/spot/depth/occup_front"
+        self.merge_topic = "/spot1/base/spot/depth/merge_front"
+        self.accum_topic = "/spot1/base/spot/depth/accum_front"
+        self.occup_topic = "/spot1/base/spot/depth/occup_front"
         # -----------------------------------------------------------
         
         # CameraInfo → K Matrix Caching ------------------------------------------
