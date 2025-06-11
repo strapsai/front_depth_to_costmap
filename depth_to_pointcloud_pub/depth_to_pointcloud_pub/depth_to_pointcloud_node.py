@@ -96,7 +96,7 @@ class DepthToPointCloudNode(Node):
         #self.sync.registerCallback(self._synced_depth_cb)
         self.sync = ApproximateTimeSynchronizer(
             [self.sub_left, self.sub_right, self.sub_odom], # iwshim. 25.05.30
-            queue_size=50,                    
+            queue_size=10,                    
             slop=1.0)
         self.sync.registerCallback(self._synced_costmap)
 
