@@ -97,7 +97,7 @@ class DepthToPointCloudNode(Node):
         self.sync = ApproximateTimeSynchronizer(
             [self.sub_left, self.sub_right, self.sub_odom], # iwshim. 25.05.30
             queue_size=50,                    
-            slop=0.10)
+            slop=1.0)
         self.sync.registerCallback(self._synced_costmap)
 
         # Only for debugging 결과 PointCloud2 퍼블리셔 -----------------------------------------
