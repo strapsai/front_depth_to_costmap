@@ -450,6 +450,7 @@ class DepthToPointCloudNode(Node):
         return T
     @staticmethod
     def transform_to_matrix(position, orientation) -> np.ndarray:
+        import transforms3d
         T = np.eye(4)
 
         T[0, 3] = position.x
