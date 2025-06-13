@@ -16,7 +16,6 @@ from cv_bridge import CvBridge
 from transforms3d.quaternions import quat2mat
 from geometry_msgs.msg import PoseStamped
 
-## 여러 토픽 동기화용
 from message_filters import Subscriber, ApproximateTimeSynchronizer
 
 # iwshim
@@ -98,7 +97,8 @@ class DepthToPointCloudNode(Node):
             [self.sub_left, self.sub_right, self.sub_odom], # iwshim. 25.05.30
             queue_size=30,                    
             slop=1.0)
-        self.sync.registerCallback(self._synced_costmap)
+        #self.sync.registerCallback(self._synced_costmap)
+        self.sync.registerCallback(self._debug_cb)
 
         # Only for debugging 결과 PointCloud2 퍼블리셔 -----------------------------------------
         self.pub_merge = self.create_publisher(PointCloud2, self.merge_topic, 10)
@@ -112,6 +112,12 @@ class DepthToPointCloudNode(Node):
         self.get_logger().info(f"[{prefix}] CameraInfo OK\n", once=True)
 
     # ───────────── 동기화된 Costmap 콜백 ─────────────
+    def _debug_cb(self, msg_left: Image, msg_right: Image, odom: Odometry):
+        t_l = img_l.header.stamp.sec + img_l.header.stamp.nanosec*1e-9
+        t_r = img_r.header.stamp.sec + img_r.header.stamp.nanosec*1e-9
+        t_o = odom.header.stamp.sec + odom.header.stamp.nanosec*1e-9
+        self.get_logger().info(f"stamps: left={t_l:.3f}, right={t_r:.3f}, odom={t_o:.3f}")
+        
     def _synced_costmap(self, msg_left: Image, msg_right: Image, odom: Odometry):
         
         stamp = rclpy.time.Time.from_msg(msg_left.header.stamp)
