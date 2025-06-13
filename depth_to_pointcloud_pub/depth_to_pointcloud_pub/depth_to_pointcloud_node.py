@@ -113,11 +113,11 @@ class DepthToPointCloudNode(Node):
 
     # ───────────── 동기화된 Costmap 콜백 ─────────────
     def _debug_cb(self, msg_left: Image, msg_right: Image, odom: Odometry):
-        t_l = img_l.header.stamp.sec + img_l.header.stamp.nanosec*1e-9
-        t_r = img_r.header.stamp.sec + img_r.header.stamp.nanosec*1e-9
+        t_l = msg_left.header.stamp.sec + msg_left.header.stamp.nanosec*1e-9
+        t_r = msg_right.header.stamp.sec + msg_right.header.stamp.nanosec*1e-9
         t_o = odom.header.stamp.sec + odom.header.stamp.nanosec*1e-9
         self.get_logger().info(f"stamps: left={t_l:.3f}, right={t_r:.3f}, odom={t_o:.3f}")
-        
+
     def _synced_costmap(self, msg_left: Image, msg_right: Image, odom: Odometry):
         
         stamp = rclpy.time.Time.from_msg(msg_left.header.stamp)
