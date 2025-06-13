@@ -117,7 +117,7 @@ class DepthToPointCloudNode(Node):
         t_l = msg_left.header.stamp.sec + msg_left.header.stamp.nanosec*1e-9
         t_r = msg_right.header.stamp.sec + msg_right.header.stamp.nanosec*1e-9
         t_o = odom.header.stamp.sec + odom.header.stamp.nanosec*1e-9
-        self.get_logger().info(f"stamps: \L={t_l:.3f sec}, R={t_r:.3f sec}, O={t_o:.3f sec}")
+        self.get_logger().info(f"stamps:\n L={t_l:.3f} sec, \n R={t_r:.3f} sec, \n O={t_o:.3f} sec")
 
     def _synced_costmap(self, msg_left: Image, msg_right: Image, odom: Odometry):
         
