@@ -98,14 +98,15 @@ class DepthToPointCloudNode(Node):
             queue_size=30,                    
             slop=1.0)
         #self.sync.registerCallback(self._synced_costmap)
-        self.sync.registerCallback(self._debug_cb)
+        # self.sync.registerCallback(self._debug_cb)
+
+        self.sync.registerCallback(self.occupancy_cb) # mhlee 25.06.19
 
         # Only for debugging 결과 PointCloud2 퍼블리셔 -----------------------------------------
         self.pub_merge = self.create_publisher(PointCloud2, self.merge_topic, 10)
         self.pub_accum = self.create_publisher(PointCloud2, self.accum_topic, 10)
         self.pub_occup = self.create_publisher(OccupancyGrid, self.occup_topic, 10)
 
-    
     # ───────────── CameraInfo 콜백 ─────────────
     def _camera_info_cb(self, msg: CameraInfo, prefix: str):
         self.K[prefix] = np.array(msg.k).reshape(3, 3)   ## 내부 파라미터 저장
@@ -118,6 +119,7 @@ class DepthToPointCloudNode(Node):
         t_r = msg_right.header.stamp.sec + msg_right.header.stamp.nanosec*1e-9
         t_o = odom.header.stamp.sec + odom.header.stamp.nanosec*1e-9
         self.get_logger().info(f"stamps:\n L={t_l:.3f} sec, \n R={t_r:.3f} sec, \n O={t_o:.3f} sec")
+
 
     def _synced_costmap(self, msg_left: Image, msg_right: Image, odom: Odometry):
         
@@ -139,6 +141,32 @@ class DepthToPointCloudNode(Node):
         self.pub_accum.publish(pc)
         
 
+    # ───────────── occupancy 콜백 ─────────────  # mhlee 25.06.19
+
+    def occupancy_cb(self, msg_left : Image, msg_right : Image, msg_odom : Odometry):
+
+        stamp = rclpy.time.Time.from_msg(msg_left.header.stamp)
+        self.get_logger().warning("HIT THE DEPTH CALLBACK for occupancygrid\n")
+
+        pts_left  = self._depth_to_pts(msg_left,  "frontleft")
+        pts_right = self._depth_to_pts(msg_right, "frontright")
+        pts = np.vstack((pts_left, pts_right)) ## (N,3) 행렬 합치기 *속도 최적화시 Check Point.
+
+
+        pos = msg_odom.pose.pose.position
+        ori = msg_odom.pose.pose.orientation
+        T = self.transform_to_matrix(pos, ori)
+        pts_tf = (T @ np.hstack([pts, np.ones((pts.shape[0],1))]).T).T[:,:3]
+
+        clouds = self.voxel_downsample_mean(pts_tf, 0.1)
+        clouds = self.remove_far_points(clouds, center =np.array([pos.x, pos.y, pos.z]), radius=7)
+
+        normals = self.estimate_normals_half_random_open3d(clouds, k=20, k_search=40, deterministic_k=8 )
+
+        og = self.pointcloud_to_occupancy_grid(stamp=stamp, frame=self.odom_frame, points=clouds, resolution = 0.1, grid_size= 150, center_xy = (pos.x, pos.y), normals=normals )
+        
+        self.pub_occup.publish(og)
+    
     # ───────────── 동기화된 Depth 이미지 콜백 ─────────────
     def _synced_depth_cb(self, msg_left: Image, msg_right: Image, msg_odom: Odometry):
         """
@@ -208,7 +236,7 @@ class DepthToPointCloudNode(Node):
         #                                       grid_size = 100,
         #                                       center_xy=(pos.x, pos.y),
         #                                       normals = nm)
-                                               
+                                            
         pc = self._build_pc(msg_left.header.stamp, self.odom_frame, self.clouds) #Only for display
         self.pub_accum.publish(pc)
         #self.pub_occup.publish(og)
@@ -483,7 +511,7 @@ class DepthToPointCloudNode(Node):
         cloud.is_dense = True
         cloud.data = b"".join(struct.pack("fff", *pt) for pt in points.astype(np.float32))
         return cloud
-
+    
 # ───────────── 엔트리 포인트 ─────────────
 def main(argv=None):
     rclpy.init(args=argv)                ## rclpy 초기화
