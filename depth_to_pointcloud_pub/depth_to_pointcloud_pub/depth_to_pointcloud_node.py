@@ -58,6 +58,7 @@ class DepthToPointCloudNode(Node):
 
         # Accumulation Parameters and Published Topics, iwshim 25.05.30
         self.clouds = np.zeros((1,3))
+        self.clouds_time = np.empty((0,4)) #mhlee. 25.06.21
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
         self.merge_topic = "/spot1/base/spot/depth/merge_front"
@@ -146,6 +147,7 @@ class DepthToPointCloudNode(Node):
     def occupancy_cb(self, msg_left : Image, msg_right : Image, msg_odom : Odometry):
 
         stamp = rclpy.time.Time.from_msg(msg_left.header.stamp)
+        stamp_sec = stamp.nanoseconds * 1e-9
         self.get_logger().warning("HIT THE DEPTH CALLBACK for occupancygrid\n")
 
         pts_left  = self._depth_to_pts(msg_left,  "frontleft")
@@ -158,12 +160,33 @@ class DepthToPointCloudNode(Node):
         T = self.transform_to_matrix(pos, ori)
         pts_tf = (T @ np.hstack([pts, np.ones((pts.shape[0],1))]).T).T[:,:3]
 
-        clouds = self.voxel_downsample_mean(pts_tf, 0.1)
-        clouds = self.remove_far_points(clouds, center =np.array([pos.x, pos.y, pos.z]), radius=7)
+        timestamps_col = np.full((pts_tf.shape[0], 1), stamp_sec, dtype = np.float32)
+        pts_with_time = np.hstack((pts_tf, timestamps_col))
+        
+        self.clouds_time = np.vstack((self.clouds_time, pts_with_time))
 
-        normals = self.estimate_normals_half_random_open3d(clouds, k=20, k_search=40, deterministic_k=8 )
+        self.clouds_time = self.voxel_downsample_with_timestamp(self.clouds_time, 0.1)
 
-        og = self.pointcloud_to_occupancy_grid(stamp=stamp, frame=self.odom_frame, points=clouds, resolution = 0.1, grid_size= 150, center_xy = (pos.x, pos.y), normals=normals )
+        self.clouds_time = self.filter_points_by_time(self.clouds_time, stamp_sec, 5) 
+        self.clouds = self.clouds_time[:, :3]
+        
+        pc_accum = self._build_pc(stamp, self.odom_frame, self.clouds)
+        self.pub_accum.publish(pc_accum)
+
+        normals = self.estimation_normals(self.clouds)
+
+        # if np.all(self.clouds == 0):
+        #     self.clouds = pts_tf
+        # else:
+        #     self.clouds = np.vstack((self.clouds, pts_tf))
+
+        # self.clouds = self.voxel_downsample_mean(self.clouds, 0.1)    
+        # self.clouds = self.remove_far_points(self.clouds, center =np.array([pos.x, pos.y, pos.z]), radius=7)
+
+        # normals = self.estimation_normals(self.clouds)
+        # normals = self.estimate_normals_half_random_open3d(clouds, k=20, k_search=40, deterministic_k=8 )
+
+        og = self.pointcloud_to_occupancy_grid(stamp=stamp, frame=self.odom_frame, points=self.clouds, resolution = 0.1, grid_size= 150, center_xy = (pos.x, pos.y), normals=normals )
         
         self.pub_occup.publish(og)
     
@@ -322,6 +345,55 @@ class DepthToPointCloudNode(Node):
         return points[max_idx]
 
 
+    # mhlee. 25.06.21
+    @staticmethod
+    @measure_time
+    def voxel_downsample_with_timestamp(points_with_time: np.ndarray, voxel_size: float) -> np.ndarray:
+        if points_with_time.shape[0] == 0:
+            return points_with_time
+        
+        points = points_with_time[:, :3]
+        timestamps = points_with_time[:, 3]
+
+        voxel_indices = np.floor(points / voxel_size).astype(np.int32)
+        keys, inverse, counts = np.unique(voxel_indices, axis=0, return_inverse=True, return_counts=True)
+        
+        grid_sum = np.zeros_like(keys, dtype=np.float64)
+        pts_mean = np.zeros((keys.shape[0], 3), dtype=np.float32)
+        for dim in range(3):
+            grid_sum = np.bincount(inverse, weights=points[:,dim], minlength=keys.shape[0])
+            pts_mean[:,dim] = grid_sum / counts
+
+        max_timestamps = np.full(keys.shape[0], -1.0, dtype=np.float32)
+        np.maximum.at(max_timestamps, inverse, timestamps)
+        
+        return np.hstack((pts_mean, max_timestamps[:, np.newaxis]))
+        
+        
+
+    # mhlee. 25.06.21
+    @staticmethod
+    @measure_time
+    def filter_points_by_time(points: np.ndarray, timestamp: float, window_sec: float) -> np.ndarray:
+        """
+        시간 윈도우 내의 포인트만 유지합니다.
+        ...
+        """
+        if points.shape[0] == 0:
+            return points
+
+        N = points.shape[0]
+        
+        current_time_arr = np.full((N, 1), timestamp)
+
+        point_timestamps = points[:, 3].reshape(N, 1)
+        
+        recent_mask = (current_time_arr - point_timestamps).flatten() <= window_sec
+        
+        return points[recent_mask]
+
+        
+        
 
     # iwshim. 25.05.30
     @staticmethod
@@ -489,7 +561,10 @@ class DepthToPointCloudNode(Node):
 
         T[:3, :3] = R
 
-        return T
+        return T 
+    
+    
+    
     # ───────────── numpy 포인트 → PointCloud2 메시지 ─────────────
     @staticmethod
     @measure_time
