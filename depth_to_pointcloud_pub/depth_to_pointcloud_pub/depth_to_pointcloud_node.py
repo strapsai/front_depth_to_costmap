@@ -26,6 +26,7 @@ import time, torch
 import open3d as o3d
 from functools import wraps
 
+
 def measure_time(func):
     @wraps(func)
     def wrapper(*args, **kwargs):
@@ -48,34 +49,49 @@ class DepthToPointCloudNode(Node):
     def __init__(self):
         super().__init__("depth_to_pointcloud_node")
 
-        # Basic Topic Configuration --------------------------------------------------------
+        # -------------------- Parameter  --------------------
         self.prefixes = ["frontleft", "frontright"]
-        self.depth_base = "/spot1/base/spot/depth"
-        self.body_frame = "spot1/base/spot/body"
-        self.odom_frame = "spot1/base/spot/odom"    # iwshim. 25.05.30
-        self.odom_topic = "/spot1/base/spot/odometry" # iwshim. 25.05.30
         self.bridge = CvBridge()
 
-        # Accumulation Parameters and Published Topics, iwshim 25.05.30
-        self.clouds = np.zeros((1,3))
-        self.clouds_time = np.empty((0,4)) #mhlee. 25.06.21
-        self.tf_buffer = Buffer()
-        self.tf_listener = TransformListener(self.tf_buffer, self)
-        self.merge_topic = "/spot1/base/spot/depth/merge_front"
-        self.accum_topic = "/spot1/base/spot/depth/accum_front"
-        self.occup_topic = "/spot1/base/spot/depth/occup_front"
-        # -----------------------------------------------------------
-        
-        # CameraInfo → K Matrix Caching ------------------------------------------
+        # Camera Intrinsic & Extrinsic
         self.K: Dict[str, Optional[np.ndarray]] = {p: None for p in self.prefixes}
-
-        # Rigid extrinsic (cam → body) ---------------------------------------
         self.extr = {
             "frontleft":  load_extrinsic_matrix("frontleft_info.yaml",  "body_to_frontleft"),
             "frontright": load_extrinsic_matrix("frontright_info.yaml", "body_to_frontright"),
         }
+        
+        self.device = torch.device("cuda:0")
+        self.clouds = np.zeros((1,3))
+        self.clouds_time = np.empty((0,4)) #mhlee. 25.06.21
 
-        # Subscriber for CameraInfo ------------------------------------
+        # -------------------- Frame & Topic --------------------
+
+        # Frame ID
+        self.body_frame = "spot1/base/spot/body"
+        self.odom_frame = "spot1/base/spot/odom"    # iwshim. 25.05.30
+
+        # Topic name 
+        self.depth_base = "/spot1/base/spot/depth"
+        self.odom_topic = "/spot1/base/spot/odometry" # iwshim. 25.05.30
+        self.merge_topic = "/spot1/base/spot/depth/merge_front"
+        self.accum_topic = "/spot1/base/spot/depth/accum_front"
+        self.occup_topic = "/spot1/base/spot/depth/occup_front"
+
+
+        # -------------------- Publisher  --------------------
+        
+        self.pub_merge = self.create_publisher(PointCloud2, self.merge_topic, 10)
+        self.pub_accum = self.create_publisher(PointCloud2, self.accum_topic, 10)
+        self.pub_occup = self.create_publisher(OccupancyGrid, self.occup_topic, 10)
+
+
+        # -------------------- Subscriber & Syncronizer  --------------------
+
+        # Accumulation Parameters and Published Topics, iwshim 25.05.30
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
+
+        # CameraInfo Subscriber 
         for p in self.prefixes:
             self.create_subscription(
                 CameraInfo,                                    ## 타입
@@ -83,12 +99,12 @@ class DepthToPointCloudNode(Node):
                 lambda m, pr=p: self._camera_info_cb(m, pr),   ## 콜백 (prefix 캡쳐)
                 10)                                                     ## 큐 길이
 
-        # Subscriber for depths and odometry ------------------------------------
+        # Subscriber for main Data
         self.sub_left  = Subscriber(self, Image, f"{self.depth_base}/frontleft/image")
         self.sub_right = Subscriber(self, Image, f"{self.depth_base}/frontright/image")
         self.sub_odom  = Subscriber(self, Odometry, self.odom_topic) # iwshim. 25.05.30
         
-        # Time Synchronization ------------------------------------------------
+        # Time Synchronization 
         #self.sync = ApproximateTimeSynchronizer(
         #    [self.sub_left, self.sub_right, self.sub_pose], # iwshim. 25.05.30
         #    queue_size=30,                    
@@ -101,12 +117,10 @@ class DepthToPointCloudNode(Node):
         #self.sync.registerCallback(self._synced_costmap)
         # self.sync.registerCallback(self._debug_cb)
 
-        self.sync.registerCallback(self.occupancy_cb) # mhlee 25.06.19
+        # self.sync.registerCallback(self.occupancy_cb) # mhlee 25.06.19
+        self.sync.registerCallback(self.occupancy_cb_gpu) 
 
-        # Only for debugging 결과 PointCloud2 퍼블리셔 -----------------------------------------
-        self.pub_merge = self.create_publisher(PointCloud2, self.merge_topic, 10)
-        self.pub_accum = self.create_publisher(PointCloud2, self.accum_topic, 10)
-        self.pub_occup = self.create_publisher(OccupancyGrid, self.occup_topic, 10)
+
 
     # ───────────── CameraInfo 콜백 ─────────────
     def _camera_info_cb(self, msg: CameraInfo, prefix: str):
@@ -142,9 +156,37 @@ class DepthToPointCloudNode(Node):
         self.pub_accum.publish(pc)
         
 
-    # ───────────── occupancy 콜백 ─────────────  # mhlee 25.06.19
+    # ───────────── occupancy callback ─────────────  # mhlee 25.06.19
 
-    def occupancy_cb(self, msg_left : Image, msg_right : Image, msg_odom : Odometry):
+    # def occupancy_cb(self, msg_left : Image, msg_right : Image, msg_odom : Odometry):
+
+    #     stamp = rclpy.time.Time.from_msg(msg_left.header.stamp)
+    #     stamp_sec = stamp.nanoseconds * 1e-9
+    #     self.get_logger().warning("HIT THE DEPTH CALLBACK for occupancygrid\n")
+
+    #     pts_left  = self._depth_to_pts(msg_left,  "frontleft")
+    #     pts_right = self._depth_to_pts(msg_right, "frontright")
+    #     pts = np.vstack((pts_left, pts_right)) ## (N,3) 행렬 합치기 *속도 최적화시 Check Point.
+
+
+    #     pos = msg_odom.pose.pose.position
+    #     ori = msg_odom.pose.pose.orientation
+    #     T = self.transform_to_matrix(pos, ori)
+    #     pts_tf = (T @ np.hstack([pts, np.ones((pts.shape[0],1))]).T).T[:,:3]
+
+    #     self.clouds = self.voxel_downsample_mean(pts_tf, 0.1)    
+
+    #     normals = self.estimation_normals(self.clouds)
+    #     # normals = self.estimate_normals_half_random_open3d(clouds, k=20, k_search=40, deterministic_k=8 )
+
+    #     og = self.pointcloud_to_occupancy_grid(stamp=stamp, frame=self.odom_frame, points=self.clouds, resolution = 0.1, grid_size= 150, center_xy = (pos.x, pos.y), normals=normals )
+        
+    #     self.pub_occup.publish(og)
+    
+
+    # ───────────── occupancy callback using gpu ─────────────  # mhlee 25.06.22
+
+    def occupancy_cb_gpu(self, msg_left : Image, msg_right : Image, msg_odom : Odometry):
 
         stamp = rclpy.time.Time.from_msg(msg_left.header.stamp)
         stamp_sec = stamp.nanoseconds * 1e-9
@@ -154,42 +196,45 @@ class DepthToPointCloudNode(Node):
         pts_right = self._depth_to_pts(msg_right, "frontright")
         pts = np.vstack((pts_left, pts_right)) ## (N,3) 행렬 합치기 *속도 최적화시 Check Point.
 
+        if pts.shape[0] == 0:
+            return # 처리할 포인트가 없으면 종료
 
         pos = msg_odom.pose.pose.position
         ori = msg_odom.pose.pose.orientation
-        T = self.transform_to_matrix(pos, ori)
-        pts_tf = (T @ np.hstack([pts, np.ones((pts.shape[0],1))]).T).T[:,:3]
+        T_cpu = self.transform_to_matrix(pos, ori)
 
-        timestamps_col = np.full((pts_tf.shape[0], 1), stamp_sec, dtype = np.float32)
-        pts_with_time = np.hstack((pts_tf, timestamps_col))
+        points_torch = torch.from_numpy(pts).to(self.device, torch.float32)
+        T_gpu = torch.from_numpy(T_cpu).to(self.device, torch.float32)  
+
+        num_pts = points_torch.shape[0]
+        pts_h = torch.cat([points_torch, torch.ones((num_pts, 1), device=self.device)], dim=1)
+        pts_tf_h = torch.matmul(T_gpu, pts_h.T).T
+        pts_tf_torch = pts_tf_h[:, :3] 
+
+        pcd = o3d.t.geometry.PointCloud(pts_tf_torch)
+
+        pcd = pcd.voxel_down_sample(voxel_size=0.1)
+
+        search_param = o3d.t.geometry.KDTreeSearchParamHybrid(radius=0.3, max_nn=30)
+        pcd.estimate_normals(search_param)
         
-        self.clouds_time = np.vstack((self.clouds_time, pts_with_time))
+        points_final = pcd.point.positions.cpu().numpy()
+        normals_final = pcd.point.normals.cpu().numpy()
 
-        self.clouds_time = self.voxel_downsample_with_timestamp(self.clouds_time, 0.1)
-
-        self.clouds_time = self.filter_points_by_time(self.clouds_time, stamp_sec, 5) 
-        self.clouds = self.clouds_time[:, :3]
+        # 기존 함수를 그대로 호출하되, GPU에서 계산된 결과물을 전달
+        og = self.pointcloud_to_occupancy_grid(
+            stamp=stamp, 
+            frame=self.odom_frame, 
+            points=points_final,  # GPU에서 처리된 포인트
+            resolution=0.1, 
+            grid_size=150, 
+            center_xy=(pos.x, pos.y), 
+            normals=normals_final # GPU에서 처리된 Normal
+        )
         
-        pc_accum = self._build_pc(stamp, self.odom_frame, self.clouds)
-        self.pub_accum.publish(pc_accum)
+        self.pub_occup.publish(og)      
 
-        normals = self.estimation_normals(self.clouds)
 
-        # if np.all(self.clouds == 0):
-        #     self.clouds = pts_tf
-        # else:
-        #     self.clouds = np.vstack((self.clouds, pts_tf))
-
-        # self.clouds = self.voxel_downsample_mean(self.clouds, 0.1)    
-        # self.clouds = self.remove_far_points(self.clouds, center =np.array([pos.x, pos.y, pos.z]), radius=7)
-
-        # normals = self.estimation_normals(self.clouds)
-        # normals = self.estimate_normals_half_random_open3d(clouds, k=20, k_search=40, deterministic_k=8 )
-
-        og = self.pointcloud_to_occupancy_grid(stamp=stamp, frame=self.odom_frame, points=self.clouds, resolution = 0.1, grid_size= 150, center_xy = (pos.x, pos.y), normals=normals )
-        
-        self.pub_occup.publish(og)
-    
     # ───────────── 동기화된 Depth 이미지 콜백 ─────────────
     def _synced_depth_cb(self, msg_left: Image, msg_right: Image, msg_odom: Odometry):
         """
@@ -519,7 +564,7 @@ class DepthToPointCloudNode(Node):
         grid[indy_occ, indx_occ] = 100
         
         og = OccupancyGrid()
-        og.header.stamp = stamp
+        og.header.stamp = stamp.to_msg()
         og.header.frame_id = frame
         og.info.resolution = resolution
         og.info.width = grid_size
@@ -575,7 +620,7 @@ class DepthToPointCloudNode(Node):
             PointField(name="z", offset=8, datatype=PointField.FLOAT32, count=1),
         ]
         cloud = PointCloud2()
-        cloud.header.stamp = stamp
+        cloud.header.stamp = stamp.to_msg()
         cloud.header.frame_id = frame  
         cloud.height = 1
         cloud.width = points.shape[0]
