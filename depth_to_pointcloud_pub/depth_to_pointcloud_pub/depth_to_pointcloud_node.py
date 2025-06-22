@@ -46,6 +46,11 @@ def load_extrinsic_matrix(yaml_name: str, key: str) -> np.ndarray:
 
 # ────────────────────── main node ──────────────────────
 class DepthToPointCloudNode(Node):
+
+# ────────────────────────────────────────────────────────────────────────────────────────────────
+# ──────────────────────────────── initial 설정 ──────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────────────────────────
+
     def __init__(self):
         super().__init__("depth_to_pointcloud_node")
 
@@ -122,6 +127,12 @@ class DepthToPointCloudNode(Node):
 
 
 
+
+# ────────────────────────────────────────────────────────────────────────────────────────────────
+# ──────────────────────────────── callback 함수 ──────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────────────────────────
+
+
     # ───────────── CameraInfo 콜백 ─────────────
     def _camera_info_cb(self, msg: CameraInfo, prefix: str):
         self.K[prefix] = np.array(msg.k).reshape(3, 3)   ## 내부 파라미터 저장
@@ -188,52 +199,95 @@ class DepthToPointCloudNode(Node):
 
     def occupancy_cb_gpu(self, msg_left : Image, msg_right : Image, msg_odom : Odometry):
 
+
+        ########################## Version For Open3d#########################3
+        # stamp = rclpy.time.Time.from_msg(msg_left.header.stamp)
+        # stamp_sec = stamp.nanoseconds * 1e-9
+        # self.get_logger().warning("HIT THE DEPTH CALLBACK for occupancygrid\n")
+
+        # pts_left  = self._depth_to_pts(msg_left,  "frontleft")
+        # pts_right = self._depth_to_pts(msg_right, "frontright")
+        # pts = np.vstack((pts_left, pts_right)) ## (N,3) 행렬 합치기 *속도 최적화시 Check Point.
+
+        # if pts.shape[0] == 0:
+        #     return # 처리할 포인트가 없으면 종료
+
+        # pos = msg_odom.pose.pose.position
+        # ori = msg_odom.pose.pose.orientation
+        # T_cpu = self.transform_to_matrix(pos, ori)
+
+        # points_torch = torch.from_numpy(pts).to(self.device, torch.float32)
+        # T_gpu = torch.from_numpy(T_cpu).to(self.device, torch.float32)  
+
+        # num_pts = points_torch.shape[0]
+        # pts_h = torch.cat([points_torch, torch.ones((num_pts, 1), device=self.device)], dim=1)
+        # pts_tf_h = torch.matmul(T_gpu, pts_h.T).T
+        # pts_tf_torch = pts_tf_h[:, :3] 
+
+        # pcd = o3d.t.geometry.PointCloud(pts_tf_torch)
+
+        # pcd = pcd.voxel_down_sample(voxel_size=0.1)
+
+        # search_param = o3d.t.geometry.KDTreeSearchParamHybrid(radius=0.3, max_nn=30)
+        # pcd.estimate_normals(search_param)
+        
+        # points_final = pcd.point.positions.cpu().numpy()
+        # normals_final = pcd.point.normals.cpu().numpy()
+
+        # # 기존 함수를 그대로 호출하되, GPU에서 계산된 결과물을 전달
+        # og = self.pointcloud_to_occupancy_grid(
+        #     stamp=stamp, 
+        #     frame=self.odom_frame, 
+        #     points=points_final,  # GPU에서 처리된 포인트
+        #     resolution=0.1, 
+        #     grid_size=150, 
+        #     center_xy=(pos.x, pos.y), 
+        #     normals=normals_final # GPU에서 처리된 Normal
+        # )
+        
+        # self.pub_occup.publish(og)      
+
+
+        ########################## Version For Pytorch3d#########################3
         stamp = rclpy.time.Time.from_msg(msg_left.header.stamp)
-        stamp_sec = stamp.nanoseconds * 1e-9
-        self.get_logger().warning("HIT THE DEPTH CALLBACK for occupancygrid\n")
+        self.get_logger().info("GPU-Accelerated Callback (PyTorch3D Version)")
 
         pts_left  = self._depth_to_pts(msg_left,  "frontleft")
         pts_right = self._depth_to_pts(msg_right, "frontright")
-        pts = np.vstack((pts_left, pts_right)) ## (N,3) 행렬 합치기 *속도 최적화시 Check Point.
+        pts_cpu = np.vstack((pts_left, pts_right))
 
-        if pts.shape[0] == 0:
-            return # 처리할 포인트가 없으면 종료
+        if pts_cpu.shape[0] == 0:
+            return
+
+        points_torch = torch.from_numpy(pts_cpu).to(self.device, torch.float32)
 
         pos = msg_odom.pose.pose.position
         ori = msg_odom.pose.pose.orientation
         T_cpu = self.transform_to_matrix(pos, ori)
-
-        points_torch = torch.from_numpy(pts).to(self.device, torch.float32)
         T_gpu = torch.from_numpy(T_cpu).to(self.device, torch.float32)  
-
+        
         num_pts = points_torch.shape[0]
         pts_h = torch.cat([points_torch, torch.ones((num_pts, 1), device=self.device)], dim=1)
         pts_tf_h = torch.matmul(T_gpu, pts_h.T).T
-        pts_tf_torch = pts_tf_h[:, :3] 
-
-        pcd = o3d.t.geometry.PointCloud(pts_tf_torch)
-
-        pcd = pcd.voxel_down_sample(voxel_size=0.1)
-
-        search_param = o3d.t.geometry.KDTreeSearchParamHybrid(radius=0.3, max_nn=30)
-        pcd.estimate_normals(search_param)
+        pts_tf_gpu = pts_tf_h[:, :3]  # (N, 3) 최종 변환된 포인트 (GPU 텐서)
         
-        points_final = pcd.point.positions.cpu().numpy()
-        normals_final = pcd.point.normals.cpu().numpy()
+        points_down_gpu = self._voxel_downsample_mean_pytorch(pts_tf_gpu, voxel_size=0.1)
+        normals_gpu = self._estimate_normals_pytorch3d(points_down_gpu, k=30)
+        
+        points_final = points_down_gpu.cpu().numpy()
+        normals_final = normals_gpu.cpu().numpy()
 
-        # 기존 함수를 그대로 호출하되, GPU에서 계산된 결과물을 전달
         og = self.pointcloud_to_occupancy_grid(
-            stamp=stamp, 
+            stamp=stamp.to_msg(), 
             frame=self.odom_frame, 
-            points=points_final,  # GPU에서 처리된 포인트
+            points=points_final,
             resolution=0.1, 
             grid_size=150, 
             center_xy=(pos.x, pos.y), 
-            normals=normals_final # GPU에서 처리된 Normal
+            normals=normals_final
         )
         
-        self.pub_occup.publish(og)      
-
+        self.pub_occup.publish(og)
 
     # ───────────── 동기화된 Depth 이미지 콜백 ─────────────
     def _synced_depth_cb(self, msg_left: Image, msg_right: Image, msg_odom: Odometry):
@@ -326,33 +380,10 @@ class DepthToPointCloudNode(Node):
         #pc  = self._build_pc(msg_left.header.stamp, self.body_frame, pts)
         #self.pub_merge.publish(pc)                             ## 최종 퍼블리시
         
-    
-    # ───────────── depth Image → 3-D 포인트 변환 ─────────────
-    @measure_time
-    def _depth_to_pts(self, msg: Image, prefix: str) -> Optional[np.ndarray]:
-        K = self.K[prefix]
+# ────────────────────────────────────────────────────────────────────────────────────────────────
+# ──────────────────────────────── Downsampling 관련 함수 ──────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────────────────────────
 
-        depth_raw = self.bridge.imgmsg_to_cv2(msg, "passthrough")  ## 16UC1 → np.ndarray
-        depth_m   = depth_raw.astype(np.float32) / 1000.0          ## mm → m
-        depth_m[depth_m > 5.0] = 0.0                               ## 5 m 초과 마스킹
-
-        # 픽셀 그리드 생성
-        h, w = depth_m.shape
-        fx, fy, cx, cy = K[0,0], K[1,1], K[0,2], K[1,2]
-        u, v = np.meshgrid(np.arange(w), np.arange(h))
-
-        # 핀홀 역변환: (u,v,depth) → (x,y,z)
-        z = depth_m
-        x = (u - cx) * z / fx
-        y = (v - cy) * z / fy
-
-        pts4 = np.vstack((x.ravel(), y.ravel(), z.ravel(), np.ones(z.size)))  ## 4×N
-        pts4 = pts4[:, pts4[2] > 0.1]            ## z(깊이) 0.1 m 이하 필터링
-
-        # 카메라 → 바디 좌표 변환
-        T = self.extr[prefix]                    ## 4×4 변환 행렬
-        pts_body = (T @ pts4)[:3].T              ## 결과 (N,3)
-        return pts_body.astype(np.float32)
 
     # iwshim. 25.05.30
     @staticmethod
@@ -413,9 +444,53 @@ class DepthToPointCloudNode(Node):
         np.maximum.at(max_timestamps, inverse, timestamps)
         
         return np.hstack((pts_mean, max_timestamps[:, np.newaxis]))
-        
-        
 
+    # mhlee. 25.06.22
+    @staticmethod
+    @measure_time
+    def _voxel_downsample_mean_pytorch(self, points_gpu: torch.Tensor, voxel_size: float) -> torch.Tensor:
+        """
+        PyTorch 텐서 연산만으로 Voxel Grid의 중심점을 찾아 다운샘플링합니다.
+        
+        Args:
+            points_gpu: (N, 3) 모양의 포인트 클라우드 텐서 (GPU에 있어야 함).
+            voxel_size: 복셀의 크기 (미터 단위).
+
+        Returns:
+            다운샘플링된 (M, 3) 모양의 포인트 클라우드 텐서 (GPU에 있음).
+        """
+        if points_gpu.shape[0] == 0:
+            return points_gpu
+
+        # 1. 각 포인트의 복셀 인덱스 계산
+        voxel_indices = torch.floor(points_gpu / voxel_size).long()
+
+        # 2. 고유한 복셀 인덱스와 역 인덱스, 개수 찾기
+        # unique_voxel_indices: 중복이 제거된 복셀 인덱스들 (M, 3)
+        # inverse_indices: 각 원본 포인트가 어떤 고유 복셀에 속하는지에 대한 인덱스 (N,)
+        # counts: 각 고유 복셀에 속한 포인트의 개수 (M,)
+        unique_voxel_indices, inverse_indices, counts = torch.unique(
+            voxel_indices, dim=0, return_inverse=True, return_counts=True)
+
+        # 3. 각 고유 복셀에 속한 포인트들의 합계 계산
+        # scatter_add_를 사용하여 그룹별 합계를 매우 효율적으로 계산합니다.
+        num_unique_voxels = unique_voxel_indices.shape[0]
+        sum_points_per_voxel = torch.zeros((num_unique_voxels, 3), device=self.device)
+        
+        # inverse_indices를 사용하여 points_gpu의 각 포인트를 해당하는 그룹에 더합니다.
+        sum_points_per_voxel.scatter_add_(0, inverse_indices.unsqueeze(1).expand(-1, 3), points_gpu)
+
+        # 4. 합계를 개수로 나누어 평균(중심점) 계산
+        mean_points_per_voxel = sum_points_per_voxel / counts.unsqueeze(1)
+        
+        return mean_points_per_voxel
+
+
+
+
+# ────────────────────────────────────────────────────────────────────────────────────────────────
+# ──────────────────────────────── Remove point 관련 함수 ──────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────────────────────────
     # mhlee. 25.06.21
     @staticmethod
     @measure_time
@@ -448,6 +523,12 @@ class DepthToPointCloudNode(Node):
         mask = dist2 < radius**2
         return points[mask]
         
+
+
+# ────────────────────────────────────────────────────────────────────────────────────────────────
+# ──────────────────────────────── Normal Estimation 관련 함수 ──────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────────────────────────
+
     # iwshim. 25.06.02
     @staticmethod
     @measure_time
@@ -528,7 +609,44 @@ class DepthToPointCloudNode(Node):
         N = points_torch.shape[0]
         
         return np.asarray(pcd.points)
+    
+    # mhlee. 25.06.22
+    @staticmethod
+    @measure_time
+    def _estimate_normals_pytorch3d(self, points_gpu: torch.Tensor, k: int) -> torch.Tensor:
+        """
+        PyTorch3D의 빌딩 블록을 사용해 GPU에서 Normal을 추정합니다.
+        """
+
+        if points_gpu.ndim == 2:
+            points_gpu = points_gpu.unsqueeze(0) # (N, 3) -> (1, N, 3) 배치 차원 추가
+
+        # 1. GPU에서 k-NN 탐색 (PyTorch3D의 핵심 기능)
+        _, _, nn_points = knn_points(points_gpu, points_gpu, K=k)
+
+        # 2. 주성분 분석 (PCA)을 PyTorch 텐서 연산으로 직접 구현
+        centroid = torch.mean(nn_points, dim=2, keepdim=True)
+        centered_points = nn_points - centroid
+        cov_matrix = torch.bmm(centered_points.transpose(1, 2), centered_points)
         
+        # 고유값/고유벡터 계산 (가장 작은 고유값에 해당하는 벡터가 normal)
+        _, eigenvectors = torch.linalg.eigh(cov_matrix)
+        normals = eigenvectors[:, :, 0]
+
+        # Normal 방향을 일관성 있게 (예: z축이 양수를 향하도록)
+        # 실제로는 센서 위치를 기준으로 방향을 정해야 하지만, 여기서는 간단한 예시를 사용
+        z_axis_similarity = torch.bmm(normals.unsqueeze(1), torch.tensor([0, 0, 1], device=self.device).expand_as(normals).unsqueeze(-1))
+        normals[z_axis_similarity.squeeze() < 0] *= -1
+        
+        return normals.squeeze(0) # (N, 3) 형태로 반환
+
+
+
+
+
+# ────────────────────────────────────────────────────────────────────────────────────────────────
+# ──────────────────────────────── Occupancygrid 관련 함수 ──────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────────────────────────
     # iwshim. 25.06.02
     @staticmethod
     @measure_time
@@ -576,6 +694,41 @@ class DepthToPointCloudNode(Node):
         
         return og
         
+
+
+# ────────────────────────────────────────────────────────────────────────────────────────────────
+# ──────────────────────────────── 기타 ──────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    # ───────────── depth Image → 3-D 포인트 변환 ─────────────
+    @measure_time
+    def _depth_to_pts(self, msg: Image, prefix: str) -> Optional[np.ndarray]:
+        K = self.K[prefix]
+
+        depth_raw = self.bridge.imgmsg_to_cv2(msg, "passthrough")  ## 16UC1 → np.ndarray
+        depth_m   = depth_raw.astype(np.float32) / 1000.0          ## mm → m
+        depth_m[depth_m > 5.0] = 0.0                               ## 5 m 초과 마스킹
+
+        # 픽셀 그리드 생성
+        h, w = depth_m.shape
+        fx, fy, cx, cy = K[0,0], K[1,1], K[0,2], K[1,2]
+        u, v = np.meshgrid(np.arange(w), np.arange(h))
+
+        # 핀홀 역변환: (u,v,depth) → (x,y,z)
+        z = depth_m
+        x = (u - cx) * z / fx
+        y = (v - cy) * z / fy
+
+        pts4 = np.vstack((x.ravel(), y.ravel(), z.ravel(), np.ones(z.size)))  ## 4×N
+        pts4 = pts4[:, pts4[2] > 0.1]            ## z(깊이) 0.1 m 이하 필터링
+
+        # 카메라 → 바디 좌표 변환
+        T = self.extr[prefix]                    ## 4×4 변환 행렬
+        pts_body = (T @ pts4)[:3].T              ## 결과 (N,3)
+        return pts_body.astype(np.float32)
+    
+    
+    
     # geometry_msgs/TransformStamped -> 4x4 Transform Matrix, iwshim 25.05.30
     @staticmethod
     def transform_to_matrix(t):
