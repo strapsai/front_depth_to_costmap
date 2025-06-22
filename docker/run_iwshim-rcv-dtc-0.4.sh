@@ -28,7 +28,7 @@ cd ..
 
 echo "---------------------"
 RUN_COMMAND="docker run \
-  --name iwshim_front_depth_costmap_open3d \
+  --name mhlee_test_pytorch3d \
   --ulimit rtprio=99 \
   --cap-add=sys_nice \
   --privileged \

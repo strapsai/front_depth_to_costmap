@@ -23,7 +23,7 @@ from nav_msgs.msg import Odometry, OccupancyGrid, MapMetaData #iwshim 25.06.02
 #from sklearn.neighbors import NearestNeighbors#KDTree #iwshim 25.06.02
 
 import time, torch
-import open3d as o3d
+# import open3d as o3d
 from functools import wraps
 
 
@@ -259,6 +259,7 @@ class DepthToPointCloudNode(Node):
         if pts_cpu.shape[0] == 0:
             return
 
+
         points_torch = torch.from_numpy(pts_cpu).to(self.device, torch.float32)
 
         pos = msg_odom.pose.pose.position
@@ -271,14 +272,14 @@ class DepthToPointCloudNode(Node):
         pts_tf_h = torch.matmul(T_gpu, pts_h.T).T
         pts_tf_gpu = pts_tf_h[:, :3]  # (N, 3) 최종 변환된 포인트 (GPU 텐서)
         
-        points_down_gpu = self._voxel_downsample_mean_pytorch(pts_tf_gpu, voxel_size=0.1)
+        points_down_gpu = self._voxel_downsample_mean_pytorch(points_gpu = pts_tf_gpu, voxel_size=0.1)
         normals_gpu = self._estimate_normals_pytorch3d(points_down_gpu, k=30)
         
         points_final = points_down_gpu.cpu().numpy()
         normals_final = normals_gpu.cpu().numpy()
 
         og = self.pointcloud_to_occupancy_grid(
-            stamp=stamp.to_msg(), 
+            stamp=stamp, 
             frame=self.odom_frame, 
             points=points_final,
             resolution=0.1, 
@@ -448,7 +449,7 @@ class DepthToPointCloudNode(Node):
     # mhlee. 25.06.22
     @staticmethod
     @measure_time
-    def _voxel_downsample_mean_pytorch(self, points_gpu: torch.Tensor, voxel_size: float) -> torch.Tensor:
+    def _voxel_downsample_mean_pytorch(points_gpu: torch.Tensor, voxel_size: float) -> torch.Tensor:
         """
         PyTorch 텐서 연산만으로 Voxel Grid의 중심점을 찾아 다운샘플링합니다.
         
@@ -475,7 +476,7 @@ class DepthToPointCloudNode(Node):
         # 3. 각 고유 복셀에 속한 포인트들의 합계 계산
         # scatter_add_를 사용하여 그룹별 합계를 매우 효율적으로 계산합니다.
         num_unique_voxels = unique_voxel_indices.shape[0]
-        sum_points_per_voxel = torch.zeros((num_unique_voxels, 3), device=self.device)
+        sum_points_per_voxel = torch.zeros((num_unique_voxels, 3), device=points_gpu.device)
         
         # inverse_indices를 사용하여 points_gpu의 각 포인트를 해당하는 그룹에 더합니다.
         sum_points_per_voxel.scatter_add_(0, inverse_indices.unsqueeze(1).expand(-1, 3), points_gpu)
@@ -613,21 +614,23 @@ class DepthToPointCloudNode(Node):
     # mhlee. 25.06.22
     @staticmethod
     @measure_time
-    def _estimate_normals_pytorch3d(self, points_gpu: torch.Tensor, k: int) -> torch.Tensor:
+    def _estimate_normals_pytorch3d(points_gpu: torch.Tensor, k: int) -> torch.Tensor:
+        
         """
         PyTorch3D의 빌딩 블록을 사용해 GPU에서 Normal을 추정합니다.
         """
+        from pytorch3d.ops import knn_points 
 
         if points_gpu.ndim == 2:
             points_gpu = points_gpu.unsqueeze(0) # (N, 3) -> (1, N, 3) 배치 차원 추가
 
-        # 1. GPU에서 k-NN 탐색 (PyTorch3D의 핵심 기능)
-        _, _, nn_points = knn_points(points_gpu, points_gpu, K=k)
+        # # 1. GPU에서 k-NN 탐색 (PyTorch3D의 핵심 기능)
+        _, _, nn_points = knn_points(points_gpu, points_gpu, K=k, return_nn=True)
 
         # 2. 주성분 분석 (PCA)을 PyTorch 텐서 연산으로 직접 구현
         centroid = torch.mean(nn_points, dim=2, keepdim=True)
         centered_points = nn_points - centroid
-        cov_matrix = torch.bmm(centered_points.transpose(1, 2), centered_points)
+        cov_matrix = torch.matmul(centered_points.transpose(-1, -2), centered_points)
         
         # 고유값/고유벡터 계산 (가장 작은 고유값에 해당하는 벡터가 normal)
         _, eigenvectors = torch.linalg.eigh(cov_matrix)
@@ -635,9 +638,10 @@ class DepthToPointCloudNode(Node):
 
         # Normal 방향을 일관성 있게 (예: z축이 양수를 향하도록)
         # 실제로는 센서 위치를 기준으로 방향을 정해야 하지만, 여기서는 간단한 예시를 사용
-        z_axis_similarity = torch.bmm(normals.unsqueeze(1), torch.tensor([0, 0, 1], device=self.device).expand_as(normals).unsqueeze(-1))
-        normals[z_axis_similarity.squeeze() < 0] *= -1
-        
+        z_axis_vector = torch.tensor([0, 0, 1], device=points_gpu.device, dtype=torch.float32).unsqueeze(0).unsqueeze(0) # (1, 1, 3)
+        z_axis_similarity = torch.sum(normals * z_axis_vector, dim=-1, keepdim=True) # (B, N_query, 1)
+        normals = torch.where(z_axis_similarity < 0, -normals, normals)
+
         return normals.squeeze(0) # (N, 3) 형태로 반환
 
 
