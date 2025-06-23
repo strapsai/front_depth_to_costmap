@@ -23,8 +23,13 @@ from nav_msgs.msg import Odometry, OccupancyGrid, MapMetaData #iwshim 25.06.02
 #from sklearn.neighbors import NearestNeighbors#KDTree #iwshim 25.06.02
 
 import time, torch
-# import open3d as o3d
+import open3d as o3d
 from functools import wraps
+
+
+from visualization_msgs.msg import Marker # mhlee 25.06.23
+from geometry_msgs.msg import Point, Vector3 # mhlee 25.06.23
+import std_msgs.msg # mhlee 25.06.23
 
 
 def measure_time(func):
@@ -88,6 +93,7 @@ class DepthToPointCloudNode(Node):
         self.pub_merge = self.create_publisher(PointCloud2, self.merge_topic, 10)
         self.pub_accum = self.create_publisher(PointCloud2, self.accum_topic, 10)
         self.pub_occup = self.create_publisher(OccupancyGrid, self.occup_topic, 10)
+        self.pub_normal = self.create_publisher(Marker, "/spot1/base/spot/depth/normal_front", 10) #mhlee 25.06.23
 
 
         # -------------------- Subscriber & Syncronizer  --------------------
@@ -119,12 +125,9 @@ class DepthToPointCloudNode(Node):
             [self.sub_left, self.sub_right, self.sub_odom], # iwshim. 25.05.30
             queue_size=30,                    
             slop=1.0)
-        #self.sync.registerCallback(self._synced_costmap)
+        # self.sync.registerCallback(self._synced_costmap)
         # self.sync.registerCallback(self._debug_cb)
-
-        # self.sync.registerCallback(self.occupancy_cb) # mhlee 25.06.19
-        self.sync.registerCallback(self.occupancy_cb_gpu) 
-
+        self.sync.registerCallback(self.occupancy_cb) # mhlee 25.06.19
 
 
 
@@ -163,44 +166,42 @@ class DepthToPointCloudNode(Node):
         
         self.clouds = pts_tf
         self.clouds = self.voxel_downsample_mean(self.clouds, 0.1)
-        pc = self._build_pc(msg_left.header.stamp, self.odom_frame, self.clouds) #Only for display
+        pc = self.build_pc(msg_left.header.stamp, self.odom_frame, self.clouds) #Only for display
         self.pub_accum.publish(pc)
         
 
     # ───────────── occupancy callback ─────────────  # mhlee 25.06.19
 
-    # def occupancy_cb(self, msg_left : Image, msg_right : Image, msg_odom : Odometry):
+    def occupancy_cb(self, msg_left : Image, msg_right : Image, msg_odom : Odometry):
 
-    #     stamp = rclpy.time.Time.from_msg(msg_left.header.stamp)
-    #     stamp_sec = stamp.nanoseconds * 1e-9
-    #     self.get_logger().warning("HIT THE DEPTH CALLBACK for occupancygrid\n")
+        # stamp = rclpy.time.Time.from_msg(msg_left.header.stamp)
+        # stamp_sec = stamp.nanoseconds * 1e-9
+        # self.get_logger().warning("HIT THE DEPTH CALLBACK for occupancygrid\n")
 
-    #     pts_left  = self._depth_to_pts(msg_left,  "frontleft")
-    #     pts_right = self._depth_to_pts(msg_right, "frontright")
-    #     pts = np.vstack((pts_left, pts_right)) ## (N,3) 행렬 합치기 *속도 최적화시 Check Point.
-
-
-    #     pos = msg_odom.pose.pose.position
-    #     ori = msg_odom.pose.pose.orientation
-    #     T = self.transform_to_matrix(pos, ori)
-    #     pts_tf = (T @ np.hstack([pts, np.ones((pts.shape[0],1))]).T).T[:,:3]
-
-    #     self.clouds = self.voxel_downsample_mean(pts_tf, 0.1)    
-
-    #     normals = self.estimation_normals(self.clouds)
-    #     # normals = self.estimate_normals_half_random_open3d(clouds, k=20, k_search=40, deterministic_k=8 )
-
-    #     og = self.pointcloud_to_occupancy_grid(stamp=stamp, frame=self.odom_frame, points=self.clouds, resolution = 0.1, grid_size= 150, center_xy = (pos.x, pos.y), normals=normals )
-        
-    #     self.pub_occup.publish(og)
-    
-
-    # ───────────── occupancy callback using gpu ─────────────  # mhlee 25.06.22
-
-    def occupancy_cb_gpu(self, msg_left : Image, msg_right : Image, msg_odom : Odometry):
+        # pts_left  = self._depth_to_pts(msg_left,  "frontleft")
+        # pts_right = self._depth_to_pts(msg_right, "frontright")
+        # pts = np.vstack((pts_left, pts_right)) ## (N,3) 행렬 합치기 *속도 최적화시 Check Point.
 
 
-        ########################## Version For Open3d#########################3
+        # pos = msg_odom.pose.pose.position
+        # ori = msg_odom.pose.pose.orientation
+        # T = self.transform_to_matrix(pos, ori)
+        # pts_tf = (T @ np.hstack([pts, np.ones((pts.shape[0],1))]).T).T[:,:3]
+
+        # self.clouds = self.voxel_downsample_mean(pts_tf, 0.1)    
+
+        # normals = self.estimation_normals(self.clouds)
+        # # normals = self.estimate_normals_half_random_open3d(clouds, k=20, k_search=40, deterministic_k=8 )
+
+        # og = self.pointcloud_to_occupancy_grid(stamp=stamp, frame=self.odom_frame, points=self.clouds, resolution = 0.1, grid_size= 150, center_xy = (pos.x, pos.y), normals=normals )
+        # pc = self.build_pc(msg_left.header.stamp, self.odom_frame, self.clouds)
+        # # nm = self.build_nm(msg_left.header.stamp, self.clouds, normals, self.odom_frame)
+ 
+        # self.pub_accum.publish(pc)
+        # self.pub_occup.publish(og)
+        # # self.pub_normal.publish(nm)
+
+      ########################## Version For Open3d#########################3
         # stamp = rclpy.time.Time.from_msg(msg_left.header.stamp)
         # stamp_sec = stamp.nanoseconds * 1e-9
         # self.get_logger().warning("HIT THE DEPTH CALLBACK for occupancygrid\n")
@@ -272,8 +273,8 @@ class DepthToPointCloudNode(Node):
         pts_tf_h = torch.matmul(T_gpu, pts_h.T).T
         pts_tf_gpu = pts_tf_h[:, :3]  # (N, 3) 최종 변환된 포인트 (GPU 텐서)
         
-        points_down_gpu = self._voxel_downsample_mean_pytorch(points_gpu = pts_tf_gpu, voxel_size=0.1)
-        normals_gpu = self._estimate_normals_pytorch3d(points_down_gpu, k=30)
+        points_down_gpu = self._voxel_downsample_mean_pytorch(points_gpu = pts_tf_gpu, voxel_size=0.15)
+        normals_gpu = self._estimate_normals_pytorch3d(points_down_gpu, k=20)
         
         points_final = points_down_gpu.cpu().numpy()
         normals_final = normals_gpu.cpu().numpy()
@@ -287,8 +288,23 @@ class DepthToPointCloudNode(Node):
             center_xy=(pos.x, pos.y), 
             normals=normals_final
         )
-        
+
+
+        # og = self.pointcloud_to_occupancy_grid_fixed_odom(
+        #     stamp=stamp, 
+        #     frame=self.odom_frame, 
+        #     points=points_final,
+        #     resolution=0.1, 
+        #     grid_size=150, 
+        #     normals=normals_final
+        # )
+
+        pc = self.build_pc(msg_left.header.stamp, self.odom_frame, points_final)
+        # nm = self.build_nm(msg_left.header.stamp, points_final, normals_final, self.odom_frame)
+        self.pub_accum.publish(pc)
         self.pub_occup.publish(og)
+        # self.pub_normal.publish(nm)
+
 
     # ───────────── 동기화된 Depth 이미지 콜백 ─────────────
     def _synced_depth_cb(self, msg_left: Image, msg_right: Image, msg_odom: Odometry):
@@ -360,7 +376,7 @@ class DepthToPointCloudNode(Node):
         #                                       center_xy=(pos.x, pos.y),
         #                                       normals = nm)
                                             
-        pc = self._build_pc(msg_left.header.stamp, self.odom_frame, self.clouds) #Only for display
+        pc = self.build_pc(msg_left.header.stamp, self.odom_frame, self.clouds) #Only for display
         self.pub_accum.publish(pc)
         #self.pub_occup.publish(og)
         self.get_logger().info("------------------------------------------\n")
@@ -378,7 +394,7 @@ class DepthToPointCloudNode(Node):
         """
         # -----------------------------------------------------------
         
-        #pc  = self._build_pc(msg_left.header.stamp, self.body_frame, pts)
+        #pc  = self.build_pc(msg_left.header.stamp, self.body_frame, pts)
         #self.pub_merge.publish(pc)                             ## 최종 퍼블리시
         
 # ────────────────────────────────────────────────────────────────────────────────────────────────
@@ -559,7 +575,12 @@ class DepthToPointCloudNode(Node):
         pcd.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamKNN(knn = k))
         
         return np.asarray(pcd.normals)
-        
+
+        # normals = np.asarray(pcd.normals) # mhlee 25.06.23
+        # normals[normals[:, 2] < 0] *= -1
+        # return normals
+
+
     @staticmethod
     @measure_time
     def estimate_normals_half_random_open3d(points, k=20, k_search=40, deterministic_k=8):
@@ -616,36 +637,58 @@ class DepthToPointCloudNode(Node):
     @measure_time
     def _estimate_normals_pytorch3d(points_gpu: torch.Tensor, k: int) -> torch.Tensor:
         
-        """
-        PyTorch3D의 빌딩 블록을 사용해 GPU에서 Normal을 추정합니다.
-        """
-        from pytorch3d.ops import knn_points 
+        # """
+        # PyTorch3D의 빌딩 블록을 사용해 GPU에서 Normal을 추정합니다.
+        # """
+        # from pytorch3d.ops import knn_points 
 
-        if points_gpu.ndim == 2:
-            points_gpu = points_gpu.unsqueeze(0) # (N, 3) -> (1, N, 3) 배치 차원 추가
+        # if points_gpu.ndim == 2:
+        #     points_gpu = points_gpu.unsqueeze(0) # (N, 3) -> (1, N, 3) 배치 차원 추가
 
-        # # 1. GPU에서 k-NN 탐색 (PyTorch3D의 핵심 기능)
-        _, _, nn_points = knn_points(points_gpu, points_gpu, K=k, return_nn=True)
+        # # # 1. GPU에서 k-NN 탐색 (PyTorch3D의 핵심 기능)
+        # _, _, nn_points = knn_points(points_gpu, points_gpu, K=k, return_nn=True)
 
-        # 2. 주성분 분석 (PCA)을 PyTorch 텐서 연산으로 직접 구현
-        centroid = torch.mean(nn_points, dim=2, keepdim=True)
-        centered_points = nn_points - centroid
-        cov_matrix = torch.matmul(centered_points.transpose(-1, -2), centered_points)
+        # # 2. 주성분 분석 (PCA)을 PyTorch 텐서 연산으로 직접 구현
+        # centroid = torch.mean(nn_points, dim=2, keepdim=True)
+        # centered_points = nn_points - centroid
+        # cov_matrix = torch.matmul(centered_points.transpose(-1, -2), centered_points)
         
-        # 고유값/고유벡터 계산 (가장 작은 고유값에 해당하는 벡터가 normal)
-        _, eigenvectors = torch.linalg.eigh(cov_matrix)
-        normals = eigenvectors[:, :, 0]
+        # # 고유값/고유벡터 계산 (가장 작은 고유값에 해당하는 벡터가 normal)
+        # _, eigenvectors = torch.linalg.eigh(cov_matrix)
+        # normals = eigenvectors[:, :, 0]
 
-        # Normal 방향을 일관성 있게 (예: z축이 양수를 향하도록)
-        # 실제로는 센서 위치를 기준으로 방향을 정해야 하지만, 여기서는 간단한 예시를 사용
-        z_axis_vector = torch.tensor([0, 0, 1], device=points_gpu.device, dtype=torch.float32).unsqueeze(0).unsqueeze(0) # (1, 1, 3)
-        z_axis_similarity = torch.sum(normals * z_axis_vector, dim=-1, keepdim=True) # (B, N_query, 1)
-        normals = torch.where(z_axis_similarity < 0, -normals, normals)
+        # # Normal 방향을 일관성 있게 (예: z축이 양수를 향하도록)
+        # # 실제로는 센서 위치를 기준으로 방향을 정해야 하지만, 여기서는 간단한 예시를 사용
+        # z_axis_vector = torch.tensor([0, 0, 1], device=points_gpu.device, dtype=torch.float32).unsqueeze(0).unsqueeze(0) # (1, 1, 3)
+        # z_axis_similarity = torch.sum(normals * z_axis_vector, dim=-1, keepdim=True) # (B, N_query, 1)
+        # normals = torch.where(z_axis_similarity < 0, -normals, normals)
 
-        return normals.squeeze(0) # (N, 3) 형태로 반환
+        # return normals.squeeze(0) # (N, 3) 형태로 반환
 
 
+        """
+        PyTorch3D의 공식 함수 estimate_pointcloud_normals()를 사용하여 GPU에서 Normal을 추정합니다.
+        """
 
+        from pytorch3d.ops import estimate_pointcloud_normals
+
+        # (N, 3) → (1, N, 3) 형태로 배치 차원 추가
+        if points_gpu.ndim == 2:
+            points_gpu = points_gpu.unsqueeze(0)
+
+        # PyTorch3D 공식 함수 호출
+        normals = estimate_pointcloud_normals(
+            points_gpu,
+            neighborhood_size=k,
+            disambiguate_directions=True
+        ).squeeze(0)
+
+        # 방향 보정: z축 기준으로 모두 위를 보도록
+        z_axis = torch.tensor([0, 0, 1], dtype=torch.float32, device=normals.device).unsqueeze(0)  # (1, 3)
+        dot = (normals * z_axis).sum(dim=1, keepdim=True)  # (N, 1)
+        normals = torch.where(dot < 0, -normals, normals)  # z < 0이면 뒤집기
+
+        return normals  # (N, 3)
 
 
 # ────────────────────────────────────────────────────────────────────────────────────────────────
@@ -672,9 +715,57 @@ class DepthToPointCloudNode(Node):
         mask = (indx >= 0) & (indx < grid_size) & (indy >= 0) & (indy < grid_size)
         indx, indy = indx[mask], indy[mask]
         normals = normals[mask]
+
         #valz = points[:,2][mask]
         #occ_mask = valz > -1.7
         #print(f"Occupancy mask count: {occ_mask.sum()}")
+        up_vector = np.array([0,0,1], dtype=np.float32)
+        similarity = normals @ up_vector
+        occ_mask = similarity <= 0.1
+        
+        indx_occ = indx[occ_mask]
+        indy_occ = indy[occ_mask]
+        
+        grid = np.zeros((grid_size, grid_size), dtype=np.int8)
+        grid[indy_occ, indx_occ] = 100
+        
+        og = OccupancyGrid()
+        og.header.stamp = stamp.to_msg()
+        og.header.frame_id = frame
+        og.info.resolution = resolution
+        og.info.width = grid_size
+        og.info.height = grid_size
+        og.info.origin.position.x = origin_x
+        og.info.origin.position.y = origin_y
+        # og.info.origin.position.z = -1.7
+        og.info.origin.position.z = -2.0 # mhlee 25.06.23
+        og.data = grid.flatten(order='C').astype(int).tolist()
+        
+        return og
+
+
+    # mhlee. 25.06.23
+    @staticmethod
+    @measure_time
+    def pointcloud_to_occupancy_grid_fixed_odom (stamp, frame: str, points: np.ndarray, resolution, grid_size, normals):
+        """ Parameters
+        resolution: 0.05m
+        grid_size: the number of cells per each side
+        coord_center: 
+            Origin(left bottom x) = center[0] - 0.5 * grid_size * resolution
+        """
+        origin_x = - 0.5 * grid_size * resolution
+        origin_y = - 0.5 * grid_size * resolution
+
+        # Points to grid index
+        indx = np.floor((points[:,0] - origin_x) / resolution).astype(np.int32)
+        indy = np.floor((points[:,1] - origin_y) / resolution).astype(np.int32)
+        
+         # 사전에 미리 제거 했으나, 만일의 경우를 대비해서(segmentation fault) mask-out
+        mask = (indx >= 0) & (indx < grid_size) & (indy >= 0) & (indy < grid_size)
+        indx, indy = indx[mask], indy[mask]
+        normals = normals[mask]
+        
         up_vector = np.array([0,0,1], dtype=np.float32)
         similarity = normals @ up_vector
         occ_mask = similarity <= 0.1
@@ -765,19 +856,47 @@ class DepthToPointCloudNode(Node):
 
         return T 
     
-    
+    @measure_time
+    #mhlee 25.06.23
+    def build_nm(self, stamp, points_np, normals_np, frame_id):
+        marker = Marker()
+        marker.header.frame_id = frame_id
+        marker.header.stamp = stamp
+        marker.ns = "normals"
+        marker.id = 0
+        marker.type = Marker.LINE_LIST
+        marker.action = Marker.ADD
+        marker.scale.x = 0.01
+        marker.color.r = 1.0
+        marker.color.g = 0.0
+        marker.color.b = 0.0
+        marker.color.a = 1.0
+        marker.lifetime.sec = 0 
+
+        marker.points = []
+        for i in range(0, len(points_np)):  # 너무 많으면 10개 간격으로 샘플링
+            pt = points_np[i]
+            n = normals_np[i]
+
+            start = Point(x=float(pt[0]), y=float(pt[1]), z=float(pt[2]))
+            end = Point(x=pt[0] + n[0] * 1, y=pt[1] + n[1] * 1, z=pt[2] + n[2] * 1)
+
+            marker.points.append(start)
+            marker.points.append(end)
+
+        return marker
     
     # ───────────── numpy 포인트 → PointCloud2 메시지 ─────────────
     @staticmethod
     @measure_time
-    def _build_pc(stamp, frame: str, points: np.ndarray) -> PointCloud2:
+    def build_pc(stamp, frame: str, points: np.ndarray) -> PointCloud2:
         fields = [
             PointField(name="x", offset=0, datatype=PointField.FLOAT32, count=1),
             PointField(name="y", offset=4, datatype=PointField.FLOAT32, count=1),
             PointField(name="z", offset=8, datatype=PointField.FLOAT32, count=1),
         ]
         cloud = PointCloud2()
-        cloud.header.stamp = stamp.to_msg()
+        cloud.header.stamp = stamp
         cloud.header.frame_id = frame  
         cloud.height = 1
         cloud.width = points.shape[0]
