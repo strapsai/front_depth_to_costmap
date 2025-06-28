@@ -1,7 +1,7 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/numpy.h> 
 
-#include "nav2_costmap_2d/costmap_2d.hpp"
+#include "nav2_costmap_2d/nav2_costmap_2d/costmap_2d.hpp"
 
 namespace py = pybind11;
 namespace nav2 = nav2_costmap_2d;
@@ -23,7 +23,7 @@ PYBIND11_MODULE(costmap_2d_py, m)
         .def("getSizeInCellsY", &nav2::Costmap2D::getSizeInCellsY, "Get the size of the map in cells (y-axis)") // <<< 필수 기능
         .def("getResolution", &nav2::Costmap2D::getResolution, "Get the resolution of the map") // <<< 필수 기능
         .def("getOriginX", &nav2::Costmap2D::getOriginX, "Get the origin x of the map") // <<< 필수 기능
-        .def("getOriginY", &nav2.::Costmap2D::getOriginY, "Get the origin y of the map") // <<< 필수 기능
+        .def("getOriginY", &nav2::Costmap2D::getOriginY, "Get the origin y of the map") // <<< 필수 기능
         .def("getCharMap", [](nav2::Costmap2D &self) {
             unsigned char* char_map = self.getCharMap();
             unsigned int size_x = self.getSizeInCellsX();

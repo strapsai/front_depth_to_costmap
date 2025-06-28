@@ -1,6 +1,5 @@
 #!/bin/bash
-IMAGE_NAME="iwshim/rcv-dtc:0.4-open3d-torch"
-
+IMAGE_NAME="mhlee/rcv-dtc:0.43-costmap"
 # Define environment variables for enabling graphical output for the container.
 # XAUTH 이슈로 주석처리함
 # XSOCK=/tmp/.X11-unix
@@ -28,7 +27,7 @@ cd ..
 
 echo "---------------------"
 RUN_COMMAND="docker run \
-  --name mhlee_test_pytorch3d \
+  --name mhlee_test_costmap_2 \
   --ulimit rtprio=99 \
   --cap-add=sys_nice \
   --privileged \
@@ -36,8 +35,8 @@ RUN_COMMAND="docker run \
   --ipc=host \
   --runtime=nvidia \
   -e HOST_USERNAME=$(whoami) \
-  -v$(dirname $(pwd)):/home/ros/workspace/src/front_depth_to_costmap \
-  -w /home/ros/workspace/src/front_depth_to_costmap \
+  -v$(dirname $(pwd)):/catkin_ws/src \
+  -w /catkin_ws/src \
   -it $IMAGE_NAME"
 echo -e "[run.sh]: \e[1;32mThe final run command is\n\e[0;35m$RUN_COMMAND\e[0m."
 $RUN_COMMAND
