@@ -831,17 +831,16 @@ class DepthToPointCloudNode(Node):
         metadata.origin.position.z = -2.0  # Z 좌표는 동일하게 설정
         metadata.origin.orientation.w = 1.0
         
-        # 9. Costmap 메시지의 각 필드를 채웁니다.
+        # 9. Costmap 메시지의 각 필드를 채움.
         costmap_msg.header.stamp = stamp.to_msg()
         costmap_msg.header.frame_id = frame
         costmap_msg.metadata = metadata
 
-        # 10. 데이터(data)를 채웁니다.
-        # Costmap 메시지의 data 필드는 uint8[] 타입이므로 astype(int)가 필요 없습니다.
+        # 10. 데이터(data)를 채움.
         costmap_data = self.costmap.getCharMap()
         costmap_msg.data = costmap_data.flatten().tolist()
 
-        # 11. 완성된 Costmap 메시지를 반환합니다.
+        # 11. 완성된 Costmap 메시지를 반환.
         return costmap_msg
 
 
