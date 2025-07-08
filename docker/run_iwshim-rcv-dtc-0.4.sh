@@ -28,7 +28,7 @@ cd ..
 
 echo "---------------------"
 RUN_COMMAND="docker run \
-  --name mhlee_test_pytorch3d \
+  --name mhlee_test_jetfit \
   --ulimit rtprio=99 \
   --cap-add=sys_nice \
   --privileged \
