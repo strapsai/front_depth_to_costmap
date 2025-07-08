@@ -393,6 +393,11 @@ class DepthToPointCloudNode(Node):
             voxel_size=0.15
         )
 
+        # Z축 방향 조정
+        z_axis = torch.tensor([0.0, 0.0, 1.0], device=self.device, dtype=normals_down_gpu.dtype)
+        dot_product = (normals_down_gpu * z_axis).sum(dim=-1, keepdim=True)
+        normals_down_gpu = torch.where(dot_product < 0, -normals_down_gpu, normals_down_gpu)
+ 
         # CPU로 데이터 이동
         points_final = points_down_gpu.cpu().numpy()
         normals_final = normals_down_gpu.cpu().numpy()
@@ -950,8 +955,8 @@ class DepthToPointCloudNode(Node):
         depth_filtered = KF.bilateral_blur(
             depth.unsqueeze(0).unsqueeze(0),
             (5, 5), 
-            bilateral_sigma_spatial,
-            bilateral_sigma_color,
+            sigma_space = torch.tensor([[bilateral_sigma_spatial, bilateral_sigma_spatial]], dtype=torch.float32, device=device),
+            sigma_color = torch.tensor([bilateral_sigma_color], dtype=torch.float32, device=device),
             border_type='replicate'
         ).squeeze(0).squeeze(0) # 다시 (H, W) 형태로 변경
 
@@ -968,10 +973,10 @@ class DepthToPointCloudNode(Node):
         # 2. 정점 맵의 x, y 방향 그라디언트 계산 
         C = vertex_map.shape[-1] 
 
-        wx = torch.FloatTensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]]).view(1, 1, 3, 3).type_as(vertex_map)
-        wy = torch.FloatTensor([[-1, -2, -1], [0, 0, 0], [1, 2, 1]]).view(1, 1, 3, 3).type_as(vertex_map)
+        wx = torch.FloatTensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]]).view(1, 1, 3, 3).repeat(C, 1, 1, 1).type_as(vertex_map)
+        wy = torch.FloatTensor([[-1, -2, -1], [0, 0, 0], [1, 2, 1]]).view(1, 1, 3, 3).repeat(C, 1, 1, 1).type_as(vertex_map)
 
-        img_permuted = vertex_map.permute(2, 0, 1).view(-1, 1, H, W)  # [C, 1, H, W]
+        img_permuted = vertex_map.permute(2, 0, 1).unsqueeze(0)
         img_pad = F.pad(img_permuted, (1, 1, 1, 1), mode='replicate')
         
         img_dx = F.conv2d(img_pad, wx, stride=1, padding=0, groups=C).squeeze(0).permute(1, 2, 0) # [H, W, C]
