@@ -4,7 +4,6 @@ ROS 2 node: frontleft+frontright depth → 단일 PointCloud2 (body frame)
 """
 
 import os, struct, yaml
-import costmap_2d_py # mhlee 25.06.25
 from typing import Dict, Optional
 import rclpy, numpy as np
 from rclpy.node import Node
@@ -22,9 +21,6 @@ from message_filters import Subscriber, ApproximateTimeSynchronizer
 # iwshim
 from nav_msgs.msg import Odometry, OccupancyGrid, MapMetaData #iwshim 25.06.02
 #from sklearn.neighbors import NearestNeighbors#KDTree #iwshim 25.06.02
-
-
-from nav2_msgs.msg import Costmap, CostmapMetaData # mhlee 25.06.25
 
 import time, torch
 import open3d as o3d
@@ -77,9 +73,6 @@ class DepthToPointCloudNode(Node):
         self.device = torch.device("cuda:0")
         self.clouds = np.zeros((1,3))
         self.clouds_time = np.empty((0,4)) #mhlee. 25.06.21
-        self.grid_size_costmap = 150
-        self.resolution_costmap = 0.1
-        self.costmap = costmap_2d_py.Costmap2D(self.grid_size_costmap, self.grid_size_costmap, self.resolution_costmap, 0.0, 0.0, 0) # mhlee 25.06.25
 
         # -------------------- Frame & Topic --------------------
 
@@ -93,7 +86,7 @@ class DepthToPointCloudNode(Node):
         self.merge_topic = "/spot1/base/spot/depth/merge_front"
         self.accum_topic = "/spot1/base/spot/depth/accum_front"
         self.occup_topic = "/spot1/base/spot/depth/occup_front"
-        self.costmap_topic = "/spot1/base/spot/depth/costmap_front"
+
 
         # -------------------- Publisher  --------------------
         
@@ -101,7 +94,7 @@ class DepthToPointCloudNode(Node):
         self.pub_accum = self.create_publisher(PointCloud2, self.accum_topic, 10)
         self.pub_occup = self.create_publisher(OccupancyGrid, self.occup_topic, 10)
         self.pub_normal = self.create_publisher(Marker, "/spot1/base/spot/depth/normal_front", 10) #mhlee 25.06.23
-        self.pub_costmap = self.create_publisher(Costmap, self.costmap_topic, 10)
+
 
         # -------------------- Subscriber & Syncronizer  --------------------
 
@@ -135,7 +128,6 @@ class DepthToPointCloudNode(Node):
         # self.sync.registerCallback(self._synced_costmap)
         # self.sync.registerCallback(self._debug_cb)
         self.sync.registerCallback(self.occupancy_cb) # mhlee 25.06.19
-        self.sync.registerCallback(self.costmap_cb) # mhlee 25.06.25
 
 
 
@@ -258,55 +250,6 @@ class DepthToPointCloudNode(Node):
 
 
         ########################## Version For Pytorch3d#########################3
-        # stamp = rclpy.time.Time.from_msg(msg_left.header.stamp)
-        # self.get_logger().info("GPU-Accelerated Callback (PyTorch3D Version)")
-
-        # pts_left  = self._depth_to_pts(msg_left,  "frontleft")
-        # pts_right = self._depth_to_pts(msg_right, "frontright")
-        # pts_cpu = np.vstack((pts_left, pts_right))
-
-        # if pts_cpu.shape[0] == 0:
-        #     return
-
-
-        # points_torch = torch.from_numpy(pts_cpu).to(self.device, torch.float32)
-
-        # pos = msg_odom.pose.pose.position
-        # ori = msg_odom.pose.pose.orientation
-        # T_cpu = self.transform_to_matrix(pos, ori)
-        # T_gpu = torch.from_numpy(T_cpu).to(self.device, torch.float32)  
-        
-        # num_pts = points_torch.shape[0]
-        # pts_h = torch.cat([points_torch, torch.ones((num_pts, 1), device=self.device)], dim=1)
-        # pts_tf_h = torch.matmul(T_gpu, pts_h.T).T
-        # pts_tf_gpu = pts_tf_h[:, :3]  # (N, 3) 최종 변환된 포인트 (GPU 텐서)
-        
-        # points_down_gpu = self._voxel_downsample_mean_pytorch(points_gpu = pts_tf_gpu, voxel_size=0.15)
-        # normals_gpu = self._estimate_normals_pytorch3d(points_down_gpu, k=20)
-        
-        # points_final = points_down_gpu.cpu().numpy()
-        # normals_final = normals_gpu.cpu().numpy()
-
-        # og = self.pointcloud_to_occupancy_grid(
-        #     stamp=stamp, 
-        #     frame=self.odom_frame, 
-        #     points=points_final,  # GPU에서 처리된 포인트
-        #     resolution=0.1, 
-        #     grid_size=150, 
-        #     center_xy=(pos.x, pos.y), 
-        #     normals=normals_final # GPU에서 처리된 Normal
-        # )   
-
-        # pc = self.build_pc(msg_left.header.stamp, self.odom_frame, points_final)
-        # # nm = self.build_nm(msg_left.header.stamp, points_final, normals_final, self.odom_frame)
-        # self.pub_accum.publish(pc)
-        # self.pub_occup.publish(og)
-        # # self.pub_normal.publish(nm)
-
-    # ───────────── occupancy callback ─────────────  # mhlee 25.06.26
-
-    def costmap_cb(self, msg_left : Image, msg_right : Image, msg_odom : Odometry):
-
         stamp = rclpy.time.Time.from_msg(msg_left.header.stamp)
         self.get_logger().info("GPU-Accelerated Callback (PyTorch3D Version)")
 
@@ -336,22 +279,31 @@ class DepthToPointCloudNode(Node):
         points_final = points_down_gpu.cpu().numpy()
         normals_final = normals_gpu.cpu().numpy()
 
-        og = self.pointcloud_to_costmap2d(
+        og = self.pointcloud_to_occupancy_grid(
             stamp=stamp, 
             frame=self.odom_frame, 
-            points=points_final,  # GPU에서 처리된 포인트
+            points=points_final,
             resolution=0.1, 
             grid_size=150, 
             center_xy=(pos.x, pos.y), 
-            normals=normals_final # GPU에서 처리된 Normal
-        )   
+            normals=normals_final
+        )
+
+
+        # og = self.pointcloud_to_occupancy_grid_fixed_odom(
+        #     stamp=stamp, 
+        #     frame=self.odom_frame, 
+        #     points=points_final,
+        #     resolution=0.1, 
+        #     grid_size=150, 
+        #     normals=normals_final
+        # )
 
         pc = self.build_pc(msg_left.header.stamp, self.odom_frame, points_final)
         # nm = self.build_nm(msg_left.header.stamp, points_final, normals_final, self.odom_frame)
         self.pub_accum.publish(pc)
-        self.pub_costmap.publish(cm)
+        self.pub_occup.publish(og)
         # self.pub_normal.publish(nm)
-
 
 
     # ───────────── 동기화된 Depth 이미지 콜백 ─────────────
@@ -791,59 +743,52 @@ class DepthToPointCloudNode(Node):
         
         return og
 
-    #mhlee 25.06.25
+
+    # mhlee. 25.06.23
+    @staticmethod
     @measure_time
-    def pointcloud_to_costmap2d(stamp, frame: str, points: np.ndarray, center_xy, normals):
-        self.costmap.resetMap(0, 0, 150, 150)
+    def pointcloud_to_occupancy_grid_fixed_odom (stamp, frame: str, points: np.ndarray, resolution, grid_size, normals):
+        """ Parameters
+        resolution: 0.05m
+        grid_size: the number of cells per each side
+        coord_center: 
+            Origin(left bottom x) = center[0] - 0.5 * grid_size * resolution
+        """
+        origin_x = - 0.5 * grid_size * resolution
+        origin_y = - 0.5 * grid_size * resolution
+
+        # Points to grid index
+        indx = np.floor((points[:,0] - origin_x) / resolution).astype(np.int32)
+        indy = np.floor((points[:,1] - origin_y) / resolution).astype(np.int32)
         
-        origin_x = center_xy[0] - 0.5 * self.grid_size * self.resolution
-        origin_y = center_xy[1] - 0.5 * self.grid_size * self.resolution
-        self.costmap.updateOrigin(origin_x, origin_y)
-
-        indx = np.floor((points[:,0] - origin_x) / self.resolution).astype(np.int32)
-        indy = np.floor((points[:,1] - origin_y) / self.resolution).astype(np.int32)
+         # 사전에 미리 제거 했으나, 만일의 경우를 대비해서(segmentation fault) mask-out
+        mask = (indx >= 0) & (indx < grid_size) & (indy >= 0) & (indy < grid_size)
+        indx, indy = indx[mask], indy[mask]
+        normals = normals[mask]
         
-        mask = (indx >= 0) & (indx < self.grid_size) & (indy >= 0) & (indy < self.grid_size)
-        indx, indy, normals = indx[mask], indy[mask], normals[mask]
-
-        up_vector = np.array([0, 0, 1], dtype=np.float32)
-        similarity = np.abs(normals @ up_vector)
-        COST_SCALE = 254
-        point_costs = (COST_SCALE * (1.0 - similarity)).astype(np.uint8)
-
-        grid_costs = np.zeros((150, 150), dtype=np.uint8)
-        np.maximum.at(grid_costs, (indx, indy), point_costs)
-
-        nonzero_iy, nonzero_ix = grid_costs.nonzero()
-        for iy, ix in zip(nonzero_iy, nonzero_ix):
-            cost = int(grid_costs[iy, ix])
-            self.costmap.setCost(ix, iy, cost)
-
-        costmap_msg = Costmap()
-        metadata = CostmapMetaData()
-
-        metadata.layer = "processed_depth" 
-        metadata.resolution = self.costmap.getResolution()
-        metadata.size_x = self.costmap.getSizeInCellsX()
-        metadata.size_y = self.costmap.getSizeInCellsY()
-        metadata.origin.position.x = self.costmap.getOriginX()
-        metadata.origin.position.y = self.costmap.getOriginY()
-        metadata.origin.position.z = -2.0  # Z 좌표는 동일하게 설정
-        metadata.origin.orientation.w = 1.0
+        up_vector = np.array([0,0,1], dtype=np.float32)
+        similarity = normals @ up_vector
+        occ_mask = similarity <= 0.1
         
-        # 9. Costmap 메시지의 각 필드를 채웁니다.
-        costmap_msg.header.stamp = stamp.to_msg()
-        costmap_msg.header.frame_id = frame
-        costmap_msg.metadata = metadata
-
-        # 10. 데이터(data)를 채웁니다.
-        # Costmap 메시지의 data 필드는 uint8[] 타입이므로 astype(int)가 필요 없습니다.
-        costmap_data = self.costmap.getCharMap()
-        costmap_msg.data = costmap_data.flatten().tolist()
-
-        # 11. 완성된 Costmap 메시지를 반환합니다.
-        return costmap_msg
-
+        indx_occ = indx[occ_mask]
+        indy_occ = indy[occ_mask]
+        
+        grid = np.zeros((grid_size, grid_size), dtype=np.int8)
+        grid[indy_occ, indx_occ] = 100
+        
+        og = OccupancyGrid()
+        og.header.stamp = stamp.to_msg()
+        og.header.frame_id = frame
+        og.info.resolution = resolution
+        og.info.width = grid_size
+        og.info.height = grid_size
+        og.info.origin.position.x = origin_x
+        og.info.origin.position.y = origin_y
+        og.info.origin.position.z = -1.7
+        og.data = grid.flatten(order='C').astype(int).tolist()
+        
+        return og
+        
 
 
 # ────────────────────────────────────────────────────────────────────────────────────────────────
