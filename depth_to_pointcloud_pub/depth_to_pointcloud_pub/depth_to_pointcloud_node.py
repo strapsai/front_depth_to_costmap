@@ -691,6 +691,84 @@ class DepthToPointCloudNode(Node):
         return normals  # (N, 3)
 
 
+
+
+    # mhlee. 25.07.08
+    @staticmethod
+    @measure_time
+    def estimate_normals_jetfit(pointcloud: np.ndarray, k: int) -> np.ndarray:
+        """
+        포인트 클라우드의 각 포인트에 대해 Jet Fitting을 사용하여 Normal을 추정합니다.
+        
+        Args:
+            pointcloud: (N, 3) numpy 배열 형태의 포인트 클라우드.
+            k: Normal을 추정할 때 고려할 이웃 포인트의 개수.
+
+        Returns:
+            (N, 3) numpy 배열 형태의 각 포인트에 대한 Normal 벡터.
+        """
+        N = pointcloud.shape[0]
+        normals = np.zeros((N, 3), dtype=np.float32)
+
+        # KDTree를 한 번만 구축하여 여러 포인트에 대한 이웃 검색에 재활용
+        nbrs = NearestNeighbors(n_neighbors=k).fit(pointcloud)
+
+        for i in range(N):
+
+            # 1. estimate rough normal by PCA
+            point = pointcloud[i]           
+            distances, idx = nbrs.kneighbors([point]) 
+            neighbors = pointcloud[idx[0]]
+            centered_neighbors = neighbors - neighbors.mean(axis=0)
+            U, S, Vt = svd(centered_neighbors)
+            rough_normal = Vt[-1]  # 가장 작은 고유값에 해당하는 고유 벡터
+
+            # 2. 로컬 좌표계 설정 및 회전
+            # rough_normal이 Z축이 되도록 회전 행렬 생성
+            z_axis = np.array([0.0, 0.0, 1.0])
+            axis = np.cross(z_axis, rough_normal)
+            axis = axis / norm(axis)
+            angle = np.arccos(np.dot(z_axis, rough_normal))
+            # Rodriguez's Rotation Formula
+            K = np.array([[0, -axis[2], axis[1]],
+                            [axis[2], 0, -axis[0]],
+                            [-axis[1], axis[0], 0]])
+            R_pca_to_local = np.eye(3) + np.sin(angle) * K + (1 - np.cos(angle)) * np.dot(K, K)
+        
+            # 이웃 포인트를 p를 원점으로 하고 rough_normal이 z축이 되도록 로컬 좌표계로 변환
+            local_neighbors = (neighbors - point) @ R_pca_to_local
+            
+            x, y, z = local_neighbors[:, 0], local_neighbors[:, 1], local_neighbors[:, 2]
+            
+            # 3. 2차 다항식 피팅을 위한 Vandermonde 행렬 구성
+            A = np.column_stack([x, y, x**2, x*y, y**2, np.ones_like(x)])
+            
+            # 최소제곱법으로 계수 (a1, a2, a3, a4, a5, a6) 추정
+            try:
+                coeffs, _, _, _ = np.linalg.lstsq(A, z, rcond=None)
+            except np.linalg.LinAlgError:
+                normals[i] = rough_normal / norm(rough_normal)
+                continue
+            
+            a1, a2 = coeffs[0], coeffs[1] 
+
+            # 4. 피팅된 표면의 그래디언트를 이용하여 Normal 벡터 계산
+            normal_local = np.array([-a1, -a2, 1.0])
+            normal_local = normal_local / norm(normal_local)
+
+            # 로컬 normal을 다시 월드 좌표계로 회전 복원
+            normal_world = R_pca_to_local @ normal_local
+            normals[i] = normal_world
+        
+        return normals
+
+
+
+
+
+
+
+
 # ────────────────────────────────────────────────────────────────────────────────────────────────
 # ──────────────────────────────── Occupancygrid 관련 함수 ──────────────────────────────────────────
 # ────────────────────────────────────────────────────────────────────────────────────────────────
