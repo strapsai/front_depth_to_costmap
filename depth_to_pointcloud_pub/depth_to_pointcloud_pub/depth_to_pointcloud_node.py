@@ -177,31 +177,31 @@ class DepthToPointCloudNode(Node):
 
     def occupancy_cb(self, msg_left : Image, msg_right : Image, msg_odom : Odometry):
 
-        stamp = rclpy.time.Time.from_msg(msg_left.header.stamp)
-        stamp_sec = stamp.nanoseconds * 1e-9
-        self.get_logger().warning("HIT THE DEPTH CALLBACK for occupancygrid\n")
+        # stamp = rclpy.time.Time.from_msg(msg_left.header.stamp)
+        # stamp_sec = stamp.nanoseconds * 1e-9
+        # self.get_logger().warning("HIT THE DEPTH CALLBACK for occupancygrid\n")
 
-        pts_left  = self._depth_to_pts(msg_left,  "frontleft")
-        pts_right = self._depth_to_pts(msg_right, "frontright")
-        pts = np.vstack((pts_left, pts_right)) ## (N,3) 행렬 합치기 *속도 최적화시 Check Point.
+        # pts_left  = self._depth_to_pts(msg_left,  "frontleft")
+        # pts_right = self._depth_to_pts(msg_right, "frontright")
+        # pts = np.vstack((pts_left, pts_right)) ## (N,3) 행렬 합치기 *속도 최적화시 Check Point.
 
 
-        pos = msg_odom.pose.pose.position
-        ori = msg_odom.pose.pose.orientation
-        T = self.transform_to_matrix(pos, ori)
-        pts_tf = (T @ np.hstack([pts, np.ones((pts.shape[0],1))]).T).T[:,:3]
+        # pos = msg_odom.pose.pose.position
+        # ori = msg_odom.pose.pose.orientation
+        # T = self.transform_to_matrix(pos, ori)
+        # pts_tf = (T @ np.hstack([pts, np.ones((pts.shape[0],1))]).T).T[:,:3]
 
-        self.clouds = self.voxel_downsample_mean(pts_tf, 0.1)    
+        # self.clouds = self.voxel_downsample_mean(pts_tf, 0.1)    
 
-        normals = self.estimate_normals_jetfit(self.clouds, k=10)
-        # normals = self.estimate_normals_half_random_open3d(clouds, k=20, k_search=40, deterministic_k=8 )
+        # normals = self.estimation_normals(self.clouds, k=10)
+        # # normals = self.estimate_normals_half_random_open3d(clouds, k=20, k_search=40, deterministic_k=8 )
 
-        og = self.pointcloud_to_occupancy_grid(stamp=stamp, frame=self.odom_frame, points=self.clouds, resolution = 0.1, grid_size= 150, center_xy = (pos.x, pos.y), normals=normals )
-        pc = self.build_pc(msg_left.header.stamp, self.odom_frame, self.clouds)
+        # og = self.pointcloud_to_occupancy_grid(stamp=stamp, frame=self.odom_frame, points=self.clouds, resolution = 0.1, grid_size= 150, center_xy = (pos.x, pos.y), normals=normals )
+        # pc = self.build_pc(msg_left.header.stamp, self.odom_frame, self.clouds)
         # nm = self.build_nm(msg_left.header.stamp, self.clouds, normals, self.odom_frame)
  
-        self.pub_accum.publish(pc)
-        self.pub_occup.publish(og)
+        # self.pub_accum.publish(pc)
+        # self.pub_occup.publish(og)
         # self.pub_normal.publish(nm)
 
       ########################## Version For Open3d#########################3
@@ -253,60 +253,60 @@ class DepthToPointCloudNode(Node):
 
 
         # ########################## Version For Pytorch3d#########################3
-        # stamp = rclpy.time.Time.from_msg(msg_left.header.stamp)
-        # self.get_logger().info("GPU-Accelerated Callback (PyTorch3D Version)")
+        stamp = rclpy.time.Time.from_msg(msg_left.header.stamp)
+        self.get_logger().info("GPU-Accelerated Callback (PyTorch3D Version)")
 
-        # pts_left  = self._depth_to_pts(msg_left,  "frontleft")
-        # pts_right = self._depth_to_pts(msg_right, "frontright")
-        # pts_cpu = np.vstack((pts_left, pts_right))
+        pts_left  = self._depth_to_pts(msg_left,  "frontleft")
+        pts_right = self._depth_to_pts(msg_right, "frontright")
+        pts_cpu = np.vstack((pts_left, pts_right))
 
-        # if pts_cpu.shape[0] == 0:
-        #     return
+        if pts_cpu.shape[0] == 0:
+            return
 
 
-        # points_torch = torch.from_numpy(pts_cpu).to(self.device, torch.float32)
+        points_torch = torch.from_numpy(pts_cpu).to(self.device, torch.float32)
 
-        # pos = msg_odom.pose.pose.position
-        # ori = msg_odom.pose.pose.orientation
-        # T_cpu = self.transform_to_matrix(pos, ori)
-        # T_gpu = torch.from_numpy(T_cpu).to(self.device, torch.float32)  
+        pos = msg_odom.pose.pose.position
+        ori = msg_odom.pose.pose.orientation
+        T_cpu = self.transform_to_matrix(pos, ori)
+        T_gpu = torch.from_numpy(T_cpu).to(self.device, torch.float32)  
         
-        # num_pts = points_torch.shape[0]
-        # pts_h = torch.cat([points_torch, torch.ones((num_pts, 1), device=self.device)], dim=1)
-        # pts_tf_h = torch.matmul(T_gpu, pts_h.T).T
-        # pts_tf_gpu = pts_tf_h[:, :3]  # (N, 3) 최종 변환된 포인트 (GPU 텐서)
+        num_pts = points_torch.shape[0]
+        pts_h = torch.cat([points_torch, torch.ones((num_pts, 1), device=self.device)], dim=1)
+        pts_tf_h = torch.matmul(T_gpu, pts_h.T).T
+        pts_tf_gpu = pts_tf_h[:, :3]  # (N, 3) 최종 변환된 포인트 (GPU 텐서)
         
-        # points_down_gpu = self._voxel_downsample_mean_pytorch(points_gpu = pts_tf_gpu, voxel_size=0.15)
-        # normals_gpu = self._estimate_normals_pytorch3d(points_down_gpu, k=20)
+        points_down_gpu = self._voxel_downsample_mean_pytorch(points_gpu = pts_tf_gpu, voxel_size=0.15)
+        normals_gpu = self.estimate_normals_pytorch3d(points_down_gpu, k=20)
         
-        # points_final = points_down_gpu.cpu().numpy()
-        # normals_final = normals_gpu.cpu().numpy()
+        points_final = points_down_gpu.cpu().numpy()
+        normals_final = normals_gpu.cpu().numpy()
 
-        # og = self.pointcloud_to_occupancy_grid(
+        og = self.pointcloud_to_occupancy_grid(
+            stamp=stamp, 
+            frame=self.odom_frame, 
+            points=points_final,
+            resolution=0.1, 
+            grid_size=150, 
+            center_xy=(pos.x, pos.y), 
+            normals=normals_final
+        )
+
+
+        # og = self.pointcloud_to_occupancy_grid_fixed_odom(
         #     stamp=stamp, 
         #     frame=self.odom_frame, 
         #     points=points_final,
         #     resolution=0.1, 
         #     grid_size=150, 
-        #     center_xy=(pos.x, pos.y), 
         #     normals=normals_final
         # )
 
-
-        # # og = self.pointcloud_to_occupancy_grid_fixed_odom(
-        # #     stamp=stamp, 
-        # #     frame=self.odom_frame, 
-        # #     points=points_final,
-        # #     resolution=0.1, 
-        # #     grid_size=150, 
-        # #     normals=normals_final
-        # # )
-
-        # pc = self.build_pc(msg_left.header.stamp, self.odom_frame, points_final)
-        # # nm = self.build_nm(msg_left.header.stamp, points_final, normals_final, self.odom_frame)
-        # self.pub_accum.publish(pc)
-        # self.pub_occup.publish(og)
-        # # self.pub_normal.publish(nm)
+        pc = self.build_pc(msg_left.header.stamp, self.odom_frame, points_final)
+        nm = self.build_nm(msg_left.header.stamp, points_final, normals_final, self.odom_frame)
+        self.pub_accum.publish(pc)
+        self.pub_occup.publish(og)
+        self.pub_normal.publish(nm)
 
 
     # ───────────── 동기화된 Depth 이미지 콜백 ─────────────
@@ -638,7 +638,7 @@ class DepthToPointCloudNode(Node):
     # mhlee. 25.06.22
     @staticmethod
     @measure_time
-    def _estimate_normals_pytorch3d(points_gpu: torch.Tensor, k: int) -> torch.Tensor:
+    def estimate_normals_pytorch3d(points_gpu: torch.Tensor, k: int) -> torch.Tensor:
         
         # """
         # PyTorch3D의 빌딩 블록을 사용해 GPU에서 Normal을 추정합니다.
@@ -750,7 +750,7 @@ class DepthToPointCloudNode(Node):
             try:
                 coeffs, _, _, _ = np.linalg.lstsq(A, z, rcond=None)
             except np.linalg.LinAlgError:
-                normals[i] = rough_normal / norm(rough_normal)
+                normals[i] = rough_normal / np.linalg.norm(rough_normal)
                 continue
             
             a1, a2 = coeffs[0], coeffs[1] 
@@ -762,7 +762,12 @@ class DepthToPointCloudNode(Node):
             # 로컬 normal을 다시 월드 좌표계로 회전 복원
             normal_world = R_pca_to_local @ normal_local
             normals[i] = normal_world
-        
+
+        # 방향 보정: z축 기준으로 모두 위를 보도록
+        z_axis = np.array([0, 0, 1], dtype=np.float32)
+        dot = np.sum(normals * z_axis, axis=1, keepdims=True)
+        normals[dot[:, 0] < 0] *= -1    
+    
         return normals
 
 

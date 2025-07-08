@@ -1,5 +1,5 @@
 #!/bin/bash
-IMAGE_NAME="iwshim/rcv-dtc:0.4-open3d-torch"
+IMAGE_NAME="mhlee/rcv-dtc:0.42-open3d-torch-pytorch3d"
 
 # Define environment variables for enabling graphical output for the container.
 # XAUTH 이슈로 주석처리함
