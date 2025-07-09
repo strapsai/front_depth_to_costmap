@@ -35,6 +35,7 @@ from geometry_msgs.msg import Point, Vector3 # mhlee 25.06.23
 import std_msgs.msg # mhlee 25.06.23
 import kornia.filters as KF #mhlee 25.07.08
 import torch.nn.functional as F #mhlee 25.07.08
+from pytorch3d.ops import knn_points, estimate_pointcloud_normals  #mhlee 25.07.09
 
 def measure_time(func):
     @wraps(func)
@@ -254,154 +255,36 @@ class DepthToPointCloudNode(Node):
 
 
         # ########################## Version For Pytorch3d#########################3
-        # stamp = rclpy.time.Time.from_msg(msg_left.header.stamp)
-        # self.get_logger().info("GPU-Accelerated Callback (PyTorch3D Version)")
-
-        # pts_left  = self._depth_to_pts(msg_left,  "frontleft")
-        # pts_right = self._depth_to_pts(msg_right, "frontright")
-        # pts_cpu = np.vstack((pts_left, pts_right))
-
-        # if pts_cpu.shape[0] == 0:
-        #     return
-
-
-        # points_torch = torch.from_numpy(pts_cpu).to(self.device, torch.float32)
-
-        # pos = msg_odom.pose.pose.position
-        # ori = msg_odom.pose.pose.orientation
-        # T_cpu = self.transform_to_matrix(pos, ori)
-        # T_gpu = torch.from_numpy(T_cpu).to(self.device, torch.float32)  
-        
-        # num_pts = points_torch.shape[0]
-        # pts_h = torch.cat([points_torch, torch.ones((num_pts, 1), device=self.device)], dim=1)
-        # pts_tf_h = torch.matmul(T_gpu, pts_h.T).T
-        # pts_tf_gpu = pts_tf_h[:, :3]  # (N, 3) 최종 변환된 포인트 (GPU 텐서)
-        
-        # points_down_gpu = self._voxel_downsample_mean_pytorch(points_gpu = pts_tf_gpu, voxel_size=0.15)
-        # normals_gpu = self.estimate_normals_pytorch3d(points_down_gpu, k=20)
-        
-        # points_final = points_down_gpu.cpu().numpy()
-        # normals_final = normals_gpu.cpu().numpy()
-
-        # og = self.pointcloud_to_occupancy_grid(
-        #     stamp=stamp, 
-        #     frame=self.odom_frame, 
-        #     points=points_final,
-        #     resolution=0.1, 
-        #     grid_size=150, 
-        #     center_xy=(pos.x, pos.y), 
-        #     normals=normals_final
-        # )
-
-
-        # # og = self.pointcloud_to_occupancy_grid_fixed_odom(
-        # #     stamp=stamp, 
-        # #     frame=self.odom_frame, 
-        # #     points=points_final,
-        # #     resolution=0.1, 
-        # #     grid_size=150, 
-        # #     normals=normals_final
-        # # )
-
-        # pc = self.build_pc(msg_left.header.stamp, self.odom_frame, points_final)
-        # nm = self.build_nm(msg_left.header.stamp, points_final, normals_final, self.odom_frame)
-        # self.pub_accum.publish(pc)
-        # self.pub_occup.publish(og)
-        # self.pub_normal.publish(nm)
-
-
-        ########################### mhlee 25.07.08 #########################3
-        ########################### Version For KinectFusion #########################3
-
         stamp = rclpy.time.Time.from_msg(msg_left.header.stamp)
-        self.get_logger().info("GPU-Accelerated Callback (normal_estimation_kf Version)")
+        self.get_logger().info("GPU-Accelerated Callback (PyTorch3D Version)")
 
-        all_pts_body = []
-        all_normals_body = []
-        
-        for prefix, msg in [("frontleft", msg_left), ("frontright", msg_right)]:
-            K = self.K[prefix]
+        pts_left  = self._depth_to_pts(msg_left,  "frontleft")
+        pts_right = self._depth_to_pts(msg_right, "frontright")
+        pts_cpu = np.vstack((pts_left, pts_right))
 
-            # Depth 이미지(ROS msg -> numpy -> torch tensor) 변환
-            depth_raw = self.bridge.imgmsg_to_cv2(msg, "passthrough")
-            depth_m = torch.from_numpy(depth_raw.astype(np.float32) / 1000.0).to(self.device)
-            depth_m[depth_m > 5.0] = 0.0 # 5m 초과 필터링
+        if pts_cpu.shape[0] == 0:
+            return
 
-            # Depth 이미지로부터 Normal Map estimation 
-            normals_cam_gpu = self.normal_estimation_kf(depth_m, K) # 결과: (H, W, 3) 텐서
 
-            # Depth 이미지 -> 3D 포인트 변환 
-            h, w = depth_m.shape
-            fx, fy, cx, cy = K[0, 0], K[1, 1], K[0, 2], K[1, 2]
-            
-            # 픽셀 좌표 생성
-            u_gpu = torch.arange(w, device=self.device).float()
-            v_gpu = torch.arange(h, device=self.device).float()
-            u_grid, v_grid = torch.meshgrid(u_gpu, v_gpu, indexing='xy')
+        points_torch = torch.from_numpy(pts_cpu).to(self.device, torch.float32)
 
-            # 유효한 깊이 값을 가진 픽셀만 필터링
-            valid_mask = depth_m > 0.1
-            z_cam = depth_m[valid_mask]
-            
-            # 핀홀 역변환: (u,v,depth) -> (x,y,z)
-            x_cam = (u_grid[valid_mask] - cx) * z_cam / fx
-            y_cam = (v_grid[valid_mask] - cy) * z_cam / fy
-            
-            # 카메라 좌표계 기준 포인트 (N, 3)
-            pts_cam_gpu = torch.stack([x_cam, y_cam, z_cam], dim=-1)
-            
-            # 해당 포인트들의 Normal 벡터 추출 (N, 3)
-            normals_cam_gpu_valid = normals_cam_gpu[valid_mask]
-            
-            # Body 좌표계로 변환 
-            T_body_cam_gpu = torch.from_numpy(self.extr[prefix]).to(self.device, dtype=torch.float32)
-            R_body_cam_gpu = T_body_cam_gpu[:3, :3]
-
-            # 포인트 변환 
-            pts_h = torch.cat([pts_cam_gpu, torch.ones((pts_cam_gpu.shape[0], 1), device=self.device)], dim=1)
-            pts_body_gpu = (T_body_cam_gpu @ pts_h.T).T[:, :3]
-            
-            # Normal 변환 
-            normals_body_gpu = (R_body_cam_gpu @ normals_cam_gpu_valid.T).T
-            
-            all_pts_body.append(pts_body_gpu)
-            all_normals_body.append(normals_body_gpu)
-
-        # 양쪽 카메라의 데이터를 하나로 합침
-        if not all_pts_body: return
-        pts_body_gpu = torch.cat(all_pts_body, dim=0)
-        normals_body_gpu = torch.cat(all_normals_body, dim=0)
-
-        # Odom 좌표계로 변환 
         pos = msg_odom.pose.pose.position
         ori = msg_odom.pose.pose.orientation
-        T_odom_body_cpu = self.transform_to_matrix(pos, ori)
-        T_odom_body_gpu = torch.from_numpy(T_odom_body_cpu).to(self.device, torch.float32)
-        R_odom_body_gpu = T_odom_body_gpu[:3, :3]
-
-        # 포인트 변환
-        pts_h = torch.cat([pts_body_gpu, torch.ones(pts_body_gpu.shape[0], 1, device=self.device)], dim=1)
-        pts_odom_gpu = (T_odom_body_gpu @ pts_h.T).T[:, :3]
-
-        # Normal 변환
-        normals_odom_gpu = (R_odom_body_gpu @ normals_body_gpu.T).T
-
-        # Voxel Downsampling
-        points_down_gpu, normals_down_gpu = self.voxel_downsample_mean_with_normals_pytorch(
-            points_gpu=pts_odom_gpu, 
-            normals_gpu=normals_odom_gpu, 
-            voxel_size=0.15
-        )
-
-        # Z축 방향 조정
-        z_axis = torch.tensor([0.0, 0.0, 1.0], device=self.device, dtype=normals_down_gpu.dtype)
-        dot_product = (normals_down_gpu * z_axis).sum(dim=-1, keepdim=True)
-        normals_down_gpu = torch.where(dot_product < 0, -normals_down_gpu, normals_down_gpu)
- 
-        # CPU로 데이터 이동
-        points_final = points_down_gpu.cpu().numpy()
-        normals_final = normals_down_gpu.cpu().numpy()
+        T_cpu = self.transform_to_matrix(pos, ori)
+        T_gpu = torch.from_numpy(T_cpu).to(self.device, torch.float32)  
         
+        num_pts = points_torch.shape[0]
+        pts_h = torch.cat([points_torch, torch.ones((num_pts, 1), device=self.device)], dim=1)
+        pts_tf_h = torch.matmul(T_gpu, pts_h.T).T
+        pts_tf_gpu = pts_tf_h[:, :3]  # (N, 3) 최종 변환된 포인트 (GPU 텐서)
+        
+        points_down_gpu = self._voxel_downsample_mean_pytorch(points_gpu = pts_tf_gpu, voxel_size=0.15)
+        # normals_gpu = self.estimate_normals_pytorch3d(points_down_gpu, k=20)
+        normals_gpu = self.estimate_normals_jetfit_pytorch(points_down_gpu, k=20)
+
+        points_final = points_down_gpu.cpu().numpy()
+        normals_final = normals_gpu.cpu().numpy()
+
         og = self.pointcloud_to_occupancy_grid(
             stamp=stamp, 
             frame=self.odom_frame, 
@@ -411,13 +294,132 @@ class DepthToPointCloudNode(Node):
             center_xy=(pos.x, pos.y), 
             normals=normals_final
         )
-        
-        pc = self.build_pc(msg.header.stamp, self.odom_frame, points_final)
-        nm = self.build_nm(msg.header.stamp, points_final, normals_final, self.odom_frame)
-        
+
+
+        # og = self.pointcloud_to_occupancy_grid_fixed_odom(
+        #     stamp=stamp, 
+        #     frame=self.odom_frame, 
+        #     points=points_final,
+        #     resolution=0.1, 
+        #     grid_size=150, 
+        #     normals=normals_final
+        # )
+
+        pc = self.build_pc(msg_left.header.stamp, self.odom_frame, points_final)
+        nm = self.build_nm(msg_left.header.stamp, points_final, normals_final, self.odom_frame)
         self.pub_accum.publish(pc)
         self.pub_occup.publish(og)
         self.pub_normal.publish(nm)
+
+
+        ########################### mhlee 25.07.08 #########################3
+        ########################### Version For KinectFusion #########################3
+
+        # stamp = rclpy.time.Time.from_msg(msg_left.header.stamp)
+        # self.get_logger().info("GPU-Accelerated Callback (normal_estimation_kf Version)")
+
+        # all_pts_body = []
+        # all_normals_body = []
+        
+        # for prefix, msg in [("frontleft", msg_left), ("frontright", msg_right)]:
+        #     K = self.K[prefix]
+
+        #     # Depth 이미지(ROS msg -> numpy -> torch tensor) 변환
+        #     depth_raw = self.bridge.imgmsg_to_cv2(msg, "passthrough")
+        #     depth_m = torch.from_numpy(depth_raw.astype(np.float32) / 1000.0).to(self.device)
+        #     depth_m[depth_m > 5.0] = 0.0 # 5m 초과 필터링
+
+        #     # Depth 이미지로부터 Normal Map estimation 
+        #     normals_cam_gpu = self.normal_estimation_kf(depth_m, K) # 결과: (H, W, 3) 텐서
+
+        #     # Depth 이미지 -> 3D 포인트 변환 
+        #     h, w = depth_m.shape
+        #     fx, fy, cx, cy = K[0, 0], K[1, 1], K[0, 2], K[1, 2]
+            
+        #     # 픽셀 좌표 생성
+        #     u_gpu = torch.arange(w, device=self.device).float()
+        #     v_gpu = torch.arange(h, device=self.device).float()
+        #     u_grid, v_grid = torch.meshgrid(u_gpu, v_gpu, indexing='xy')
+
+        #     # 유효한 깊이 값을 가진 픽셀만 필터링
+        #     valid_mask = depth_m > 0.1
+        #     z_cam = depth_m[valid_mask]
+            
+        #     # 핀홀 역변환: (u,v,depth) -> (x,y,z)
+        #     x_cam = (u_grid[valid_mask] - cx) * z_cam / fx
+        #     y_cam = (v_grid[valid_mask] - cy) * z_cam / fy
+            
+        #     # 카메라 좌표계 기준 포인트 (N, 3)
+        #     pts_cam_gpu = torch.stack([x_cam, y_cam, z_cam], dim=-1)
+            
+        #     # 해당 포인트들의 Normal 벡터 추출 (N, 3)
+        #     normals_cam_gpu_valid = normals_cam_gpu[valid_mask]
+            
+        #     # Body 좌표계로 변환 
+        #     T_body_cam_gpu = torch.from_numpy(self.extr[prefix]).to(self.device, dtype=torch.float32)
+        #     R_body_cam_gpu = T_body_cam_gpu[:3, :3]
+
+        #     # 포인트 변환 
+        #     pts_h = torch.cat([pts_cam_gpu, torch.ones((pts_cam_gpu.shape[0], 1), device=self.device)], dim=1)
+        #     pts_body_gpu = (T_body_cam_gpu @ pts_h.T).T[:, :3]
+            
+        #     # Normal 변환 
+        #     normals_body_gpu = (R_body_cam_gpu @ normals_cam_gpu_valid.T).T
+            
+        #     all_pts_body.append(pts_body_gpu)
+        #     all_normals_body.append(normals_body_gpu)
+
+        # # 양쪽 카메라의 데이터를 하나로 합침
+        # if not all_pts_body: return
+        # pts_body_gpu = torch.cat(all_pts_body, dim=0)
+        # normals_body_gpu = torch.cat(all_normals_body, dim=0)
+
+        # # Odom 좌표계로 변환 
+        # pos = msg_odom.pose.pose.position
+        # ori = msg_odom.pose.pose.orientation
+        # T_odom_body_cpu = self.transform_to_matrix(pos, ori)
+        # T_odom_body_gpu = torch.from_numpy(T_odom_body_cpu).to(self.device, torch.float32)
+        # R_odom_body_gpu = T_odom_body_gpu[:3, :3]
+
+        # # 포인트 변환
+        # pts_h = torch.cat([pts_body_gpu, torch.ones(pts_body_gpu.shape[0], 1, device=self.device)], dim=1)
+        # pts_odom_gpu = (T_odom_body_gpu @ pts_h.T).T[:, :3]
+
+        # # Normal 변환
+        # normals_odom_gpu = (R_odom_body_gpu @ normals_body_gpu.T).T
+
+        # # z축 방향 조정
+        # z_axis = torch.tensor([0.0, 0.0, 1.0], device=self.device, dtype=normals_odom_gpu.dtype)
+        # dot_product = (normals_odom_gpu * z_axis).sum(dim=-1, keepdim=True)
+        # normals_odom_gpu = torch.where(dot_product < 0, -normals_odom_gpu, normals_odom_gpu)
+
+        # # Voxel Downsampling
+        # points_down_gpu, normals_down_gpu = self.voxel_downsample_mean_with_normals_pytorch(
+        #     points_gpu=pts_odom_gpu, 
+        #     normals_gpu=normals_odom_gpu, 
+        #     voxel_size=0.15
+        # )
+
+        # # CPU로 데이터 이동
+        # points_final = points_down_gpu.cpu().numpy()
+        # normals_final = normals_down_gpu.cpu().numpy()
+        
+        # og = self.pointcloud_to_occupancy_grid(
+        #     stamp=stamp, 
+        #     frame=self.odom_frame, 
+        #     points=points_final,
+        #     resolution=0.1, 
+        #     grid_size=150, 
+        #     center_xy=(pos.x, pos.y), 
+        #     normals=normals_final
+        # )
+        
+        # pc = self.build_pc(msg.header.stamp, self.odom_frame, points_final)
+        # nm = self.build_nm(msg.header.stamp, points_final, normals_final, self.odom_frame)
+        
+        # self.pub_accum.publish(pc)
+        # self.pub_occup.publish(og)
+        # self.pub_normal.publish(nm)
 
 
 
@@ -835,8 +837,6 @@ class DepthToPointCloudNode(Node):
         PyTorch3D의 공식 함수 estimate_pointcloud_normals()를 사용하여 GPU에서 Normal을 추정합니다.
         """
 
-        from pytorch3d.ops import estimate_pointcloud_normals
-
         # (N, 3) → (1, N, 3) 형태로 배치 차원 추가
         if points_gpu.ndim == 2:
             points_gpu = points_gpu.unsqueeze(0)
@@ -930,6 +930,97 @@ class DepthToPointCloudNode(Node):
         dot = np.sum(normals * z_axis, axis=1, keepdims=True)
         normals[dot[:, 0] < 0] *= -1    
     
+        return normals
+
+
+
+    # mhlee. 25.07.09
+    @staticmethod
+    @measure_time
+    def estimate_normals_jetfit_pytorch(pointcloud_gpu: torch.Tensor, k: int = 20) -> torch.Tensor:
+        """
+        포인트 클라우드의 각 포인트에 대해 Jet Fitting을 사용하여 Normal을 추정합니다. (PyTorch/GPU 버전)
+        모든 연산이 벡터화되어 GPU에서 병렬로 수행됩니다.
+
+        Args:
+            pointcloud_gpu: (N, 3) 형태의 GPU에 올라간 torch.Tensor.
+            k: Normal을 추정할 때 고려할 이웃 포인트의 개수.
+
+        Returns:
+            (N, 3) 형태의 각 포인트에 대한 Normal 벡터 (torch.Tensor).
+        """
+        device = pointcloud_gpu.device
+        N = pointcloud_gpu.shape[0]
+
+
+        # 0. Jet Fitting에 사용할 K-NN 탐색
+        _, _, neighbors = knn_points(
+            pointcloud_gpu.unsqueeze(0), 
+            pointcloud_gpu.unsqueeze(0), 
+            K=k
+        )
+        neighbors = neighbors.squeeze(0)  # (N, k, 3)
+
+        # 1. Estimate Rough normals
+        rough_normals = estimate_pointcloud_normals(
+        pointcloud_gpu.unsqueeze(0), 
+        neighborhood_size=k
+        ).squeeze(0)         
+
+        # 2. 로컬 좌표계로 변환하기 위한 회전 행렬을 배치로 생성합니다.
+        z_axis = torch.tensor([0.0, 0.0, 1.0], device=device).expand_as(rough_normals)
+        axis = torch.cross(z_axis, rough_normals, dim=1)
+        axis = torch.nn.functional.normalize(axis, p=2, dim=1) 
+        
+        angle = torch.acos(torch.sum(z_axis * rough_normals, dim=1))
+
+        # Skew-symmetric matrix (K)를 배치로 구성
+        K = torch.zeros((N, 3, 3), device=device)
+        K[:, 0, 1] = -axis[:, 2]
+        K[:, 0, 2] =  axis[:, 1]
+        K[:, 1, 0] =  axis[:, 2]
+        K[:, 1, 2] = -axis[:, 0]
+        K[:, 2, 0] = -axis[:, 1]
+        K[:, 2, 1] =  axis[:, 0]
+
+        # Rodrigues' formula를 배치 행렬 연산으로 계산
+        angle = angle.unsqueeze(1).unsqueeze(2) # (N, 1, 1)
+        R_local_to_world = torch.eye(3, device=device).expand(N, -1, -1) + \
+                        torch.sin(angle) * K + \
+                        (1 - torch.cos(angle)) * torch.bmm(K, K) # (N, 3, 3)
+
+        # 3. 이웃 포인트들을 로컬 좌표계로 변환하고 2차 다항식을 피팅
+        R_world_to_local = R_local_to_world.transpose(1, 2)
+        
+        # 각 포인트를 원점으로 이동시키고 회전
+        p_centered = neighbors - pointcloud_gpu.unsqueeze(1) # (N, k, 3)
+        local_neighbors = torch.bmm(p_centered, R_world_to_local) # (N, k, 3)
+        
+        x = local_neighbors[:, :, 0] # (N, k)
+        y = local_neighbors[:, :, 1] # (N, k)
+        z = local_neighbors[:, :, 2] # (N, k)
+
+        # Vandermonde 행렬 A를 배치로 구성. z = a1*x + a2*y + a3*x^2 + a4*xy + a5*y^2 + a6
+        A = torch.stack([x, y, x**2, x*y, y**2, torch.ones_like(x)], dim=2) # (N, k, 6)
+
+        # torch.linalg.lstsq를 사용하여 배치로 최소제곱법 해를 구합니다.
+        # z를 (N, k, 1) 형태로 만들어 B로 사용
+        coeffs = torch.linalg.lstsq(A, z.unsqueeze(2)).solution.squeeze(2) # (N, 6)
+        a1, a2 = coeffs[:, 0], coeffs[:, 1]
+
+        # 4. 피팅된 표면의 그래디언트를 이용해 Normal 벡터를 계산하고 다시 월드 좌표계로 변환합니다.
+        normal_local = torch.stack([-a1, -a2, torch.ones(N, device=device)], dim=1) # (N, 3)
+        normal_local = torch.nn.functional.normalize(normal_local, p=2, dim=1)
+        
+        # 로컬 Normal을 다시 월드 좌표계로 회전 (bmm을 위해 unsqueeze/squeeze 사용)
+
+        normals = torch.bmm(R_local_to_world, normal_local.unsqueeze(2)).squeeze(2) # (N, 3)
+        
+        # 5. Normal 방향을 z축 기준으로 일관성 있게 보정
+        dot_product = torch.sum(normals * z_axis, dim=1)
+        mask = dot_product < 0
+        normals[mask] *= -1
+
         return normals
 
 
