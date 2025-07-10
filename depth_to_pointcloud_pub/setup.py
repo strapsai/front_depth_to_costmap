@@ -25,7 +25,8 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'depth_to_pointcloud_node = depth_to_pointcloud_pub.depth_to_pointcloud_node:main'
+            'depth_to_pointcloud_node = depth_to_pointcloud_pub.depth_to_pointcloud_node:main',
+            'traversability_to_occupancygrid_node = depth_to_pointcloud_pub.traversability_to_occupancygrid_node:main'
         ],
     },
 )
