@@ -36,6 +36,12 @@ import std_msgs.msg # mhlee 25.06.23
 import kornia.filters as KF #mhlee 25.07.08
 import torch.nn.functional as F #mhlee 25.07.08
 from pytorch3d.ops import knn_points, estimate_pointcloud_normals  #mhlee 25.07.09
+import torchvision.transforms as transforms #mhlee 25.07.10
+from models.fastflow_SSL_n import PSPNET_RADIO_SSL #mhlee 25.07.10
+from models.proxy_n_c import Proxy #mhlee 25.07.10
+from PIL import Image as PILImage
+import random
+
 
 def measure_time(func):
     @wraps(func)
@@ -54,6 +60,17 @@ def load_extrinsic_matrix(yaml_name: str, key: str) -> np.ndarray:
     with open(os.path.join(pkg, "config", yaml_name), "r", encoding="utf-8") as f:
         return np.array(yaml.safe_load(f)[key]["Matrix"]).reshape(4, 4)
 
+
+def fix_seed(seed=1):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+
 # ────────────────────── main node ──────────────────────
 class TraversabilitytoOccupancygridNode(Node):
 
@@ -65,11 +82,20 @@ class TraversabilitytoOccupancygridNode(Node):
         super().__init__("traversability_to_occupancygrid_node")
 
         # -------------------- Parameter  --------------------
-        self.prefixes = ["frontleft_depth", "frontright_depth", "frontleft_rgb", "frontright_rgb"]
+        package_share_directory = get_package_share_directory('depth_to_pointcloud_pub')
+        model_path = os.path.join(package_share_directory, 'models', '45.pth')
+        self.model, self.proxy_model = self.load_model(model_path) 
+
+
+        # -------------------- Parameter  --------------------
+        self.depth_camera_ids = ["frontleft_depth", "frontright_depth"] 
+        self.rgb_camera_ids = ["frontleft_rgb", "frontright_rgb"]     
+        self.all_camera_ids = self.depth_camera_ids + self.rgb_camera_ids 
+
         self.bridge = CvBridge()
 
         # Camera Intrinsic & Extrinsic
-        self.K: Dict[str, Optional[np.ndarray]] = {p: None for p in self.prefixes}
+        self.K: Dict[str, Optional[np.ndarray]] = {cam_id: None for cam_id in self.all_camera_ids}
         self.extr = {
             "frontleft_depth":  load_extrinsic_matrix("frontleft_info.yaml",  "body_to_frontleft"),
             "frontright_depth": load_extrinsic_matrix("frontright_info.yaml", "body_to_frontright"),
@@ -105,7 +131,32 @@ class TraversabilitytoOccupancygridNode(Node):
 
 
         # -------------------- Subscriber & Syncronizer  --------------------
+        self.create_subscription(
+            CameraInfo,
+            f"{self.depth_base}/frontleft/camera_info",
+            lambda m: self._camera_info_cb(m, "frontleft_depth"), 
+            10
+        )
+        self.create_subscription(
+            CameraInfo,
+            f"{self.depth_base}/frontright/camera_info",
+            lambda m: self._camera_info_cb(m, "frontright_depth"),
+            10
+        )
 
+        self.create_subscription(
+            CameraInfo,
+            f"{self.rgb_base}/frontleft/camera_info",
+            lambda m: self._camera_info_cb(m, "frontleft_rgb"), \
+            10
+        )
+        self.create_subscription(
+            CameraInfo,
+            f"{self.rgb_base}/frontright/camera_info",
+            lambda m: self._camera_info_cb(m, "frontright_rgb"), 
+            10
+        )
+     
         # Subscriber for main Data
         self.sub_leftdepth  = Subscriber(self, Image, f"{self.depth_base}/frontleft/image")
         self.sub_rightdepth = Subscriber(self, Image, f"{self.depth_base}/frontright/image")
@@ -124,7 +175,10 @@ class TraversabilitytoOccupancygridNode(Node):
 # ────────────────────────────────────────────────────────────────────────────────────────────────
 # ──────────────────────────────── callback 함수 ──────────────────────────────────────────
 # ────────────────────────────────────────────────────────────────────────────────────────────────
-
+    
+        # ───────────── camera callback ─────────────  
+    def _camera_info_cb(self, msg: CameraInfo, camera_id: str): 
+        self.K[camera_id] = np.array(msg.k).reshape(3, 3)   
 
     # ───────────── occupancy callback ─────────────  # mhlee 25.06.19
 
@@ -133,8 +187,8 @@ class TraversabilitytoOccupancygridNode(Node):
         stamp = rclpy.time.Time.from_msg(msg_leftdepth.header.stamp)
         self.get_logger().info("GPU-Accelerated Callback (PyTorch3D Version)")
 
-        traversability_left = traversability(msg_leftrgb)
-        traversability_right = traversability(msg_rightrgb) # output 1xHxW image
+        traversability_left = self.traversability(msg_leftrgb, self.model, self.proxy_model)
+        traversability_right = self.traversability(msg_rightrgb, self.model, self.proxy_model) # output 1xHxW image
 
         pts_left  = self.depth_to_pts_frame_body(msg_leftdepth,  "frontleft_depth")
         pts_right = self.depth_to_pts_frame_body(msg_rightdepth, "frontright_depth")
@@ -168,10 +222,10 @@ class TraversabilitytoOccupancygridNode(Node):
             resolution=0.1, 
             grid_size=150, 
             center_xy=(pos.x, pos.y), 
-            traversability_threshold = 200
+            traversability_threshold = 0.5
         )
 
-        pc = self.build_pc(msg_leftdepth.header.stamp, self.odom_frame, points_final)
+        pc = self.build_pc(msg_leftdepth.header.stamp, self.odom_frame, points_final[:, :3])
         self.pub_accum.publish(pc)
         self.pub_occup.publish(og)
 
@@ -265,69 +319,50 @@ class TraversabilitytoOccupancygridNode(Node):
 # ──────────────────────────────── Traversability 관련 함수 ──────────────────────────────────────────
 # ────────────────────────────────────────────────────────────────────────────────────────────────
 
-# mhlee 25.07.10 
-# def traversability (image):
-#     return traversability_image
-# 아마 1xHxW (traversability값이 0~255로 표현된) 으로 예상
+    @measure_time
+    def load_model(self, model_path):
+        fix_seed(1)
+        model = PSPNET_RADIO_SSL(in_channels=256, flow_steps=8, freeze_backbone=True, flow='fast')
+        proxy_model = Proxy(num_proxies=256, dim=256)
+        checkpoint = torch.load(model_path, map_location='cpu')
+        model.local_extractor.load_state_dict(checkpoint['local_extractor'])
+        model.nf_flows.load_state_dict(checkpoint['nf_flows'])
+        proxy_model.positive_center.data = checkpoint['positive_center']
+        # proxy_model.proxy_u.data = checkpoint['proxy_u']
+        # proxy_model.negative_centers.data = checkpoint['negative_centers']
+        model.eval()
+        proxy_model.eval()
+        return model.cuda(), proxy_model.cuda()
+    
+    @measure_time
+    def traversability(self, image_msg : Image, model, proxy_model):
+        cv_image = self.bridge.imgmsg_to_cv2(image_msg, "bgr8")
+        pil_image = PILImage.fromarray(cv_image)
+
+        transform = transforms.Compose([
+        transforms.Resize((512, 512)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[103.939/255, 116.779/255, 123.68/255],
+                            std=[0.229, 0.224, 0.225]),
+        ])
+        image_tensor = transform(pil_image).unsqueeze(0).cuda()
+        similarity_map = model.inference(image_tensor, proxy_model)
+        
+        resized_map = transforms.functional.resize(similarity_map, image_tensor.shape[2:], interpolation=transforms.InterpolationMode.BILINEAR)
+        
+        sim_np = resized_map.squeeze().cpu().numpy()
+        sim_norm = (sim_np - sim_np.min()) / (sim_np.max() - sim_np.min() + 1e-8)
+
+        return sim_norm
 
 
 
 # ────────────────────────────────────────────────────────────────────────────────────────────────
 # ──────────────────────────────── Occupancygrid 관련 함수 ──────────────────────────────────────────
 # ────────────────────────────────────────────────────────────────────────────────────────────────
-    # iwshim. 25.06.02
     @staticmethod
     @measure_time
-    def pointcloud_to_occupancy_grid(stamp, frame: str, points: np.ndarray, resolution, grid_size, center_xy, normals):
-        """ Parameters
-        resolution: 0.05m
-        grid_size: the number of cells per each side
-        coord_center: 
-            Origin(left bottom x) = center[0] - 0.5 * grid_size * resolution
-        """
-        origin_x = center_xy[0] - 0.5 * grid_size * resolution
-        origin_y = center_xy[1] - 0.5 * grid_size * resolution
-
-        # Points to grid index
-        indx = np.floor((points[:,0] - origin_x) / resolution).astype(np.int32)
-        indy = np.floor((points[:,1] - origin_y) / resolution).astype(np.int32)
-        
-         # 사전에 미리 제거 했으나, 만일의 경우를 대비해서(segmentation fault) mask-out
-        mask = (indx >= 0) & (indx < grid_size) & (indy >= 0) & (indy < grid_size)
-        indx, indy = indx[mask], indy[mask]
-        normals = normals[mask]
-
-        #valz = points[:,2][mask]
-        #occ_mask = valz > -1.7
-        #print(f"Occupancy mask count: {occ_mask.sum()}")
-        up_vector = np.array([0,0,1], dtype=np.float32)
-        similarity = normals @ up_vector
-        occ_mask = similarity <= 0.1
-        
-        indx_occ = indx[occ_mask]
-        indy_occ = indy[occ_mask]
-        
-        grid = np.zeros((grid_size, grid_size), dtype=np.int8)
-        grid[indy_occ, indx_occ] = 100
-        
-        og = OccupancyGrid()
-        og.header.stamp = stamp.to_msg()
-        og.header.frame_id = frame
-        og.info.resolution = resolution
-        og.info.width = grid_size
-        og.info.height = grid_size
-        og.info.origin.position.x = origin_x
-        og.info.origin.position.y = origin_y
-        # og.info.origin.position.z = -1.7
-        og.info.origin.position.z = -2.0 # mhlee 25.06.23
-        og.data = grid.flatten(order='C').astype(int).tolist()
-        
-        return og
-    
-
-    @staticmethod
-    @measure_time
-    def pointcloud_with_traversability_to_occupancy_grid(stamp, frame: str, points: np.ndarray, resolution, grid_size, center_xy, traversability_threshold):
+    def pointcloud_with_traversability_to_occupancy_grid(stamp, frame: str, pts_with_t: np.ndarray, resolution, grid_size, center_xy, traversability_threshold):
         """ Parameters
         resolution: 0.05m
         grid_size: the number of cells per each side
@@ -344,15 +379,15 @@ class TraversabilitytoOccupancygridNode(Node):
 
 
         # Points to grid index
-        indx = np.floor((points[:,0] - origin_x) / resolution).astype(np.int32)
-        indy = np.floor((points[:,1] - origin_y) / resolution).astype(np.int32)
+        indx = np.floor((x - origin_x) / resolution).astype(np.int32)
+        indy = np.floor((y - origin_y) / resolution).astype(np.int32)
         
          # 사전에 미리 제거 했으나, 만일의 경우를 대비해서(segmentation fault) mask-out
         mask = (indx >= 0) & (indx < grid_size) & (indy >= 0) & (indy < grid_size)
         indx, indy, t = indx[mask], indy[mask], t[mask]
 
         grid = np.zeros((grid_size, grid_size), dtype=np.int8)
-        occ_mask = t < traversability_threshold # mhlee (important : 나중에 traversability code에 따라 255값 변경해야함)
+        occ_mask = t > traversability_threshold # mhlee (important : 나중에 traversability code에 따라 255값 변경해야함)
         grid[indy[occ_mask], indx[occ_mask]] = 100
 
         og = OccupancyGrid()
@@ -363,8 +398,7 @@ class TraversabilitytoOccupancygridNode(Node):
         og.info.height = grid_size
         og.info.origin.position.x = origin_x
         og.info.origin.position.y = origin_y
-        # og.info.origin.position.z = -1.7
-        og.info.origin.position.z = -2.0 # mhlee 25.06.23
+        og.info.origin.position.z = -2.0 
         og.data = grid.flatten(order='C').astype(int).tolist()
         
         return og
@@ -377,9 +411,9 @@ class TraversabilitytoOccupancygridNode(Node):
 
     # ───────────── depth Image → 3-D 포인트 변환 ─────────────
     @measure_time
-    def depth_to_pts_frame_body(self, msg: Image, prefix: str) -> Optional[np.ndarray]:
+    def depth_to_pts_frame_body(self, msg: Image, camera_id: str) -> Optional[np.ndarray]:
         
-        K = self.K[prefix]
+        K = self.K[camera_id]
 
         depth_raw = self.bridge.imgmsg_to_cv2(msg, "passthrough")  ## 16UC1 → np.ndarray
         depth_m   = depth_raw.astype(np.float32) / 1000.0          ## mm → m
@@ -399,14 +433,13 @@ class TraversabilitytoOccupancygridNode(Node):
         pts4 = pts4[:, pts4[2] > 0.1]            ## z(깊이) 0.1 m 이하 필터링
 
         # 카메라 → 바디 좌표 변환
-        T = self.extr[prefix]                    ## 4×4 변환 행렬
+        T = self.extr[camera_id]                    ## 4×4 변환 행렬
         pts_body = (T @ pts4)[:3].T              ## 결과 (N,3)
         
         return pts_body.astype(np.float32)
 
-
     @measure_time
-    def merge_traversability_to_pointcloud_frmae_body(pts_body: np.darray, traversability_img: np.darray, prefix_rgb: str) -> Optional[np.ndarray]:
+    def merge_traversability_to_pointcloud_frmae_body(self, pts_body: np.ndarray, traversability_img: np.darray, prefix_rgb: str) -> Optional[np.ndarray]:
 
         N = pts_body.shape[0]
         pts4 = np.hstack([pts_body, np.ones((N, 1))])
@@ -427,11 +460,10 @@ class TraversabilitytoOccupancygridNode(Node):
         v = (fy * y / z + cy).astype(np.int32)
 
         H, W = traversability_img.shape
-        valid = (5 > z > 0.1) & (u >= 0) & (u < W) & (v >= 0) & (v < H) 
+        valid = (z > 0.1) & (z < 5.0) & (u >= 0) & (u < W) & (v >= 0) & (v < H) 
 
         t = np.zeros(N, dtype=np.float32)
-        t[valid] = traversability_img[v[valid], u[valid]] / 255.0 # mhlee (important : 나중에 traversability code에 따라 255값 변경해야함)
-
+        t[valid] = traversability_img[v[valid], u[valid]] 
         pts_with_t = np.hstack([pts_body, t[:, None]])
         return pts_with_t
         
