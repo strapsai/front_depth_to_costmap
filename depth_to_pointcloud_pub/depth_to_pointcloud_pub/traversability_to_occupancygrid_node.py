@@ -12,6 +12,8 @@ from ament_index_python.packages import get_package_share_directory
 from cv_bridge import CvBridge
 from transforms3d.quaternions import quat2mat
 from message_filters import Subscriber, ApproximateTimeSynchronizer
+from visualization_msgs.msg import Marker
+
 
 # iwshim
 from nav_msgs.msg import Odometry, OccupancyGrid, MapMetaData #iwshim 25.06.02
@@ -20,8 +22,9 @@ import time, torch
 from functools import wraps
 import torch.nn.functional as F #mhlee 25.07.08
 import torchvision.transforms as transforms #mhlee 25.07.10
-from models.fastflow_SSL_n import PSPNET_RADIO_SSL #mhlee 25.07.10
-from models.proxy_n_c import Proxy #mhlee 25.07.10
+
+from depth_to_pointcloud_pub.models.fastflow_SSL_n import PSPNET_RADIO_SSL #mhlee 25.07.10
+from depth_to_pointcloud_pub.models.proxy_n_c import Proxy #mhlee 25.07.10
 from PIL import Image as PILImage
 import random
 
@@ -66,7 +69,8 @@ class TraversabilitytoOccupancygridNode(Node):
 
         # -------------------- Parameter  --------------------
         package_share_directory = get_package_share_directory('depth_to_pointcloud_pub')
-        model_path = os.path.join(package_share_directory, 'models', '45.pth')
+        # model_path = os.path.join(package_share_directory, 'models', '45.pth') #모델파일 경로 추후에 바꿔야함(important)
+        model_path = '/home/ros/workspace/src/front_depth_to_costmap/depth_to_pointcloud_pub/depth_to_pointcloud_pub/models/45.pth'
         self.model, self.proxy_model = self.load_model(model_path) 
 
 
@@ -203,7 +207,7 @@ class TraversabilitytoOccupancygridNode(Node):
 
         og = self.pointcloud_with_traversability_to_occupancy_grid(stamp=stamp, 
             frame=self.odom_frame, 
-            points=points_final_cpu,
+            pts_with_t=points_final_cpu,
             resolution=0.1, 
             grid_size=150, 
             center_xy=(pos.x, pos.y), 
@@ -263,8 +267,8 @@ class TraversabilitytoOccupancygridNode(Node):
         model = PSPNET_RADIO_SSL(in_channels=256, flow_steps=8, freeze_backbone=True, flow='fast') # 이 파라미터들 어떤게 optimized한지 생각해보기 (important)
         proxy_model = Proxy(num_proxies=256, dim=256)
         checkpoint = torch.load(model_path, map_location='cpu')
-        model.local_extractor.load_state_dict(checkpoint['local_extractor'])
-        model.nf_flows.load_state_dict(checkpoint['nf_flows'])
+        model.local_extractor.load_state_dict(checkpoint['local_extractor'], strict=False)
+        model.nf_flows.load_state_dict(checkpoint['nf_flows'], strict=False)
         proxy_model.positive_center.data = checkpoint['positive_center']
         # proxy_model.proxy_u.data = checkpoint['proxy_u']
         # proxy_model.negative_centers.data = checkpoint['negative_centers']
@@ -279,7 +283,8 @@ class TraversabilitytoOccupancygridNode(Node):
         if use_dummy:
             self.get_logger().warn("Using dummy traversability data!")
             H, W = image_msg.height, image_msg.width
-            dummy_map = np.random.uniform(0.0, 1.0, size=(H, W)).astype(np.float32)  # 0~1 랜덤
+            dummy_map = torch.zeros((H, W), device=self.device)
+            dummy_map[:, W // 2:] = 1.0 
             return dummy_map
     
         cv_image = self.bridge.imgmsg_to_cv2(image_msg, "bgr8")

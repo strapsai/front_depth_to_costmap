@@ -19,7 +19,7 @@ from timm.models.vision_transformer import _cfg
 import sys
 sys.path.insert(0, "/home/park/Documents/ws_yspark/toss/RADIO")
 
-from hubconf import radio_model
+from depth_to_pointcloud_pub.RADIO.hubconf import radio_model
 
 def fix_seed(seed=1):
     # random.seed(seed)
