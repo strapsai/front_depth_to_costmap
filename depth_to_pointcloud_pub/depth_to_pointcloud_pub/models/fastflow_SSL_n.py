@@ -199,6 +199,7 @@ class PSPNET_RADIO_SSL(nn.Module):
         features_2 = self.head(features_2)
 
         return [positive_features.T, negative_features.T, unlabeled_features.T, valid_jac_dets], [features_1, features_2]
+    
     def inference(self, input_tensor, proxy):
         self.eval()
         if self.freeze_backbone:

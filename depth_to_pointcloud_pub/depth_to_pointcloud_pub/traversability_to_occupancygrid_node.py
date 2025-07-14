@@ -183,7 +183,7 @@ class TraversabilitytoOccupancygridNode(Node):
         pts_with_traversability_left = self.merge_traversability_to_pointcloud_frame_body(pts_left_body_gpu, traversability_left, "frontleft_rgb")
         pts_with_traversability_right = self.merge_traversability_to_pointcloud_frame_body(pts_right_body_gpu, traversability_right, "frontright_rgb")
 
-        pts_with_traversability_body = torch.cat([pts_with_traversability_left, pts_with_traversability_right], dim=0)
+        pts_with_traversability_body = torch.cat([pts_with_traversability_left, pts_with_traversability_right], dim=0) # 지금은 중복된것을 torch.cat으로 했는데 , 보수적인 값으로 추정하면서도 연산에 방해안되는 것으로 바꿔보기(Important)
 
         pts_with_traversability_downsampled = self.voxel_downsample_mean_traversability(pts_with_traversability_body, 0.05)
 
@@ -260,7 +260,7 @@ class TraversabilitytoOccupancygridNode(Node):
     @measure_time
     def load_model(self, model_path):
         fix_seed(1)
-        model = PSPNET_RADIO_SSL(in_channels=256, flow_steps=8, freeze_backbone=True, flow='fast')
+        model = PSPNET_RADIO_SSL(in_channels=256, flow_steps=8, freeze_backbone=True, flow='fast') # 이 파라미터들 어떤게 optimized한지 생각해보기 (important)
         proxy_model = Proxy(num_proxies=256, dim=256)
         checkpoint = torch.load(model_path, map_location='cpu')
         model.local_extractor.load_state_dict(checkpoint['local_extractor'])
@@ -273,7 +273,15 @@ class TraversabilitytoOccupancygridNode(Node):
         return model.cuda(), proxy_model.cuda()
     
     @measure_time
-    def traversability(self, image_msg : Image, model, proxy_model):
+    def traversability(self, image_msg : Image, model, proxy_model): # 세로로 넣었다가, 세로로 출력되는 것으로 바꾸고, 시작과 끝에 세로-> 가로 / 가로 -> 세로 넣어야함(important)
+        use_dummy = True  
+
+        if use_dummy:
+            self.get_logger().warn("Using dummy traversability data!")
+            H, W = image_msg.height, image_msg.width
+            dummy_map = np.random.uniform(0.0, 1.0, size=(H, W)).astype(np.float32)  # 0~1 랜덤
+            return dummy_map
+    
         cv_image = self.bridge.imgmsg_to_cv2(image_msg, "bgr8")
         pil_image = PILImage.fromarray(cv_image)
 
@@ -282,11 +290,12 @@ class TraversabilitytoOccupancygridNode(Node):
         transforms.ToTensor(),
         transforms.Normalize(mean=[103.939/255, 116.779/255, 123.68/255],
                             std=[0.229, 0.224, 0.225]),
-        ])
+        ]) # DTC에 맞춰서 mean, std, Resize값..(?) 변경해야함 (important)
+        
         image_tensor = transform(pil_image).unsqueeze(0).cuda()
         similarity_map = model.inference(image_tensor, proxy_model)
         
-        resized_map = transforms.functional.resize(similarity_map, image_tensor.shape[2:], interpolation=transforms.InterpolationMode.BILINEAR)
+        resized_map = transforms.functional.resize(similarity_map, image_tensor.shape[2:], interpolation=transforms.InterpolationMode.BILINEAR) # 이것도 Interpolation 방법 생각해보기(Important)
         
         sim_np = resized_map.squeeze().cpu().numpy()
         sim_norm = (sim_np - sim_np.min()) / (sim_np.max() - sim_np.min() + 1e-8)
