@@ -1192,6 +1192,54 @@ class DepthToPointCloudNode(Node):
         return og
         
 
+   # mhlee. 25.07.14
+    @staticmethod
+    @measure_time
+    def pointcloud_to_occupancy_grid_withcost(stamp, frame: str, points: np.ndarray, resolution, grid_size, center_xy, normals):
+        """ Parameters
+        resolution: 0.05m
+        grid_size: the number of cells per each side
+        coord_center: 
+            Origin(left bottom x) = center[0] - 0.5 * grid_size * resolution
+        """
+        origin_x = center_xy[0] - 0.5 * grid_size * resolution
+        origin_y = center_xy[1] - 0.5 * grid_size * resolution
+
+        # Points to grid index
+        indx = np.floor((points[:,0] - origin_x) / resolution).astype(np.int32)
+        indy = np.floor((points[:,1] - origin_y) / resolution).astype(np.int32)
+        
+         # 사전에 미리 제거 했으나, 만일의 경우를 대비해서(segmentation fault) mask-out
+        mask = (indx >= 0) & (indx < grid_size) & (indy >= 0) & (indy < grid_size)
+        indx, indy = indx[mask], indy[mask]
+        normals = normals[mask]
+
+        up_vector = np.array([0,0,1], dtype=np.float32)
+        similarity = np.abs(normals @ up_vector)
+        cost_values = np.round((1 - similarity) * 100).astype(np.int8) # 0이 주행가능, 100이 주행불가능
+
+        grid = np.full((grid_size, grid_size), -1, dtype=np.int8)
+
+        for x_idx, y_idx, sim in zip(indx, indy, cost_values):
+            if grid[y_idx, x_idx] == -1:
+                grid[y_idx, x_idx] = sim
+            else:
+                grid[y_idx, x_idx] = min(grid[y_idx, x_idx], sim)
+        
+        og = OccupancyGrid()
+        og.header.stamp = stamp.to_msg()
+        og.header.frame_id = frame
+        og.info.resolution = resolution
+        og.info.width = grid_size
+        og.info.height = grid_size
+        og.info.origin.position.x = origin_x
+        og.info.origin.position.y = origin_y
+        # og.info.origin.position.z = -1.7
+        og.info.origin.position.z = -2.0 # mhlee 25.06.23
+        og.data = grid.flatten(order='C').astype(int).tolist()
+        
+        return og
+
 
 # ────────────────────────────────────────────────────────────────────────────────────────────────
 # ──────────────────────────────── 기타 ──────────────────────────────────────────

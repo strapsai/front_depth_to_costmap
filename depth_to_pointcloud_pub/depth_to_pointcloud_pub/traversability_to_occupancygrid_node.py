@@ -207,7 +207,6 @@ class TraversabilitytoOccupancygridNode(Node):
             resolution=0.1, 
             grid_size=150, 
             center_xy=(pos.x, pos.y), 
-            traversability_threshold = 0.5
         )
 
         pc = self.build_pc(msg_leftdepth.header.stamp, self.odom_frame, points_final_cpu[:, :3])
@@ -301,7 +300,7 @@ class TraversabilitytoOccupancygridNode(Node):
 # ────────────────────────────────────────────────────────────────────────────────────────────────
     @staticmethod
     @measure_time
-    def pointcloud_with_traversability_to_occupancy_grid(stamp, frame: str, pts_with_t: np.ndarray, resolution, grid_size, center_xy, traversability_threshold):
+    def pointcloud_with_traversability_to_occupancy_grid(stamp, frame: str, pts_with_t: np.ndarray, resolution, grid_size, center_xy):
         """ Parameters
         resolution: 0.05m
         grid_size: the number of cells per each side
@@ -325,9 +324,13 @@ class TraversabilitytoOccupancygridNode(Node):
         mask = (indx >= 0) & (indx < grid_size) & (indy >= 0) & (indy < grid_size)
         indx, indy, t = indx[mask], indy[mask], t[mask]
 
-        grid = np.zeros((grid_size, grid_size), dtype=np.int8)
-        occ_mask = t < traversability_threshold 
-        grid[indy[occ_mask], indx[occ_mask]] = 100
+        grid = np.full((grid_size, grid_size), -1, dtype=np.int8)
+        traversability_value = np.round((1 - t) * 100).astype(np.int8)  # 0이 주행가능, 100이 주행불가능
+        for x_idx, y_idx, trav in zip(indx, indy, traversability_value):
+            if grid[y_idx, x_idx] == -1:
+                grid[y_idx, x_idx] = trav
+            else:
+                grid[y_idx, x_idx] = min(grid[y_idx, x_idx], trav) # 최소값으로 저장
 
         og = OccupancyGrid()
         og.header.stamp = stamp.to_msg()
