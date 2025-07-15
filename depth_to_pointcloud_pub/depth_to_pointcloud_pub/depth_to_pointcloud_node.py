@@ -277,33 +277,24 @@ class DepthToPointCloudNode(Node):
         pts_h = torch.cat([points_torch, torch.ones((num_pts, 1), device=self.device)], dim=1)
         pts_tf_h = torch.matmul(T_gpu, pts_h.T).T
         pts_tf_gpu = pts_tf_h[:, :3]  # (N, 3) 최종 변환된 포인트 (GPU 텐서)
-        
-        points_down_gpu = self._voxel_downsample_mean_pytorch(points_gpu = pts_tf_gpu, voxel_size=0.15)
-        # normals_gpu = self.estimate_normals_pytorch3d(points_down_gpu, k=20)
-        normals_gpu = self.estimate_normals_jetfit_pytorch(points_down_gpu, k=20)
+        # 
+        points_down_gpu = self._voxel_downsample_mean_pytorch(points_gpu = pts_tf_gpu, voxel_size=0.1)
+        normals_gpu = self.estimate_normals_pytorch3d(points_down_gpu, k=20)
+        # normals_gpu = self.estimate_normals_jetfit_pytorch(points_down_gpu, k=20)
 
         points_final = points_down_gpu.cpu().numpy()
         normals_final = normals_gpu.cpu().numpy()
 
-        og = self.pointcloud_to_occupancy_grid(
-            stamp=stamp, 
+
+        og = self.pointcloud_to_occupancy_grid_withcost(
+            stamp=stamp,
             frame=self.odom_frame, 
             points=points_final,
-            resolution=0.1, 
-            grid_size=150, 
-            center_xy=(pos.x, pos.y), 
-            normals=normals_final
+            resolution=0.05, 
+            grid_size=100, 
+            center_xy = (pos.x , pos.y),
+            normals = normals_final
         )
-
-
-        # og = self.pointcloud_to_occupancy_grid_fixed_odom(
-        #     stamp=stamp, 
-        #     frame=self.odom_frame, 
-        #     points=points_final,
-        #     resolution=0.1, 
-        #     grid_size=150, 
-        #     normals=normals_final
-        # )
 
         pc = self.build_pc(msg_left.header.stamp, self.odom_frame, points_final)
         nm = self.build_nm(msg_left.header.stamp, points_final, normals_final, self.odom_frame)
@@ -1241,6 +1232,36 @@ class DepthToPointCloudNode(Node):
         return og
 
 
+
+
+   # mhlee. 25.07.14
+    @staticmethod
+    @measure_time
+    def occupancygrid_motion_debug(stamp, frame: str, resolution, grid_size, center_xy):
+        """ Parameters
+        resolution: 0.05m
+        grid_size: the number of cells per each side
+        coord_center: 
+            Origin(left bottom x) = center[0] - 0.5 * grid_size * resolution
+        """
+        origin_x = center_xy[0] - 0.5 * grid_size * resolution
+        origin_y = center_xy[1] - 0.5 * grid_size * resolution
+        grid = np.full((grid_size, grid_size), 0, dtype=np.int8)
+
+        og = OccupancyGrid()
+        og.header.stamp = stamp.to_msg()
+        og.header.frame_id = frame
+        og.info.resolution = resolution
+        og.info.width = grid_size
+        og.info.height = grid_size
+        og.info.origin.position.x = origin_x
+        og.info.origin.position.y = origin_y
+        # og.info.origin.position.z = -1.7
+        og.info.origin.position.z = -2.0 # mhlee 25.06.23
+        og.data = grid.flatten(order='C').astype(int).tolist()
+        return og
+
+
 # ────────────────────────────────────────────────────────────────────────────────────────────────
 # ──────────────────────────────── 기타 ──────────────────────────────────────────
 # ────────────────────────────────────────────────────────────────────────────────────────────────
@@ -1252,7 +1273,7 @@ class DepthToPointCloudNode(Node):
 
         depth_raw = self.bridge.imgmsg_to_cv2(msg, "passthrough")  ## 16UC1 → np.ndarray
         depth_m   = depth_raw.astype(np.float32) / 1000.0          ## mm → m
-        depth_m[depth_m > 5.0] = 0.0                               ## 5 m 초과 마스킹
+        depth_m[depth_m > 2.0] = 0.0                               ## 5 m 초과 마스킹
 
         # 픽셀 그리드 생성
         h, w = depth_m.shape

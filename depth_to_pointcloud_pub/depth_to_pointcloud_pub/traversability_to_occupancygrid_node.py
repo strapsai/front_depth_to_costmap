@@ -41,10 +41,15 @@ def measure_time(func):
     return wrapper
     
 # ────────────────────── utils ──────────────────────
-def load_extrinsic_matrix(yaml_name: str, key: str) -> np.ndarray:
+def load_extrinsic(yaml_name: str, key: str) -> np.ndarray:
     pkg = get_package_share_directory("depth_to_pointcloud_pub")
     with open(os.path.join(pkg, "config", yaml_name), "r", encoding="utf-8") as f:
         return np.array(yaml.safe_load(f)[key]["Matrix"]).reshape(4, 4)
+    
+def load_intrinsic(yaml_name: str, key: str) -> np.ndarray:
+    pkg = get_package_share_directory("depth_to_pointcloud_pub")
+    with open(os.path.join(pkg, "config", yaml_name), "r", encoding="utf-8") as f:
+        return np.array(yaml.safe_load(f)[key]["Matrix"]).reshape(3, 3)
 
 
 def fix_seed(seed=1):
@@ -72,6 +77,13 @@ class TraversabilitytoOccupancygridNode(Node):
         # model_path = os.path.join(package_share_directory, 'models', '45.pth') #모델파일 경로 추후에 바꿔야함(important)
         model_path = '/home/ros/workspace/src/front_depth_to_costmap/depth_to_pointcloud_pub/depth_to_pointcloud_pub/models/45.pth'
         self.model, self.proxy_model = self.load_model(model_path) 
+        self.device = torch.device("cuda:0")
+        self.transform = transforms.Compose([
+            transforms.Resize((512, 512)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[103.939/255, 116.779/255, 123.68/255],
+                                std=[0.229, 0.224, 0.225]),
+        ]) # 이거 정규화 수치 나중에 바꿔야할듯(important)
 
 
         # -------------------- Parameter  --------------------
@@ -82,18 +94,27 @@ class TraversabilitytoOccupancygridNode(Node):
         self.bridge = CvBridge()
 
         # Camera Intrinsic & Extrinsic
-        self.K: Dict[str, Optional[np.ndarray]] = {cam_id: None for cam_id in self.all_camera_ids}
-        self.extr = {
-            "frontleft_depth":  load_extrinsic_matrix("frontleft_info.yaml",  "body_to_frontleft"),
-            "frontright_depth": load_extrinsic_matrix("frontright_info.yaml", "body_to_frontright"),
-            "frontleft_rgb":  load_extrinsic_matrix("frontleft_info.yaml",  "body_to_frontleft_fisheye"),
-            "frontright_rgb": load_extrinsic_matrix("frontright_info.yaml", "body_to_frontright_fisheye"),
-        }
-        
-        self.device = torch.device("cuda:0")
-        self.clouds = np.zeros((1,3))
-        self.clouds_time = np.empty((0,4)) #mhlee. 25.06.21
+        # self.camera_parameter = {
+        #     "frontleft_depth_extrinsic":  load_camera_parameter("frontleft_info.yaml",  "body_to_frontleft"),
+        #     "frontright_depth_extrinsic": load_camera_parameter("frontright_info.yaml", "body_to_frontright"),
+        #     "frontleft_rgb_extrinsic":  load_camera_parameter("frontleft_info.yaml",  "body_to_frontleft_fisheye"),
+        #     "frontright_rgb_extrinsic": load_camera_parameter("frontright_info.yaml", "body_to_frontright_fisheye"),
+        #     "frontleft_depth_intrinsic":  load_camera_parameter("frontleft_info.yaml",  "frontleft_depth_intrinsic"),
+        #     "frontright_depth_intrinsic": load_camera_parameter("frontright_info.yaml", "frontright_depth_intrinsic"),
+        #     "frontleft_rgb_intrinsic":  load_camera_parameter("frontleft_info.yaml",  "frontleft_fisheye_intrinsic"),
+        #     "frontright_rgb_intrinsic": load_camera_parameter("frontright_info.yaml", "frontright_fisheye_intrinsic"),
+        # }
 
+
+        self.T_body_to_frontleft_depth = torch.tensor(load_extrinsic("frontleft_info.yaml",  "body_to_frontleft"), dtype=torch.float32, device=self.device) 
+        self.T_body_to_frontleft_fisheye = torch.tensor(load_extrinsic("frontleft_info.yaml",  "body_to_frontleft_fisheye"), dtype=torch.float32, device=self.device) 
+        self.T_body_to_frontright_depth = torch.tensor(load_extrinsic("frontright_info.yaml",  "body_to_frontright"), dtype=torch.float32, device=self.device) 
+        self.T_body_to_frontright_fisheye = torch.tensor(load_extrinsic("frontright_info.yaml",  "body_to_frontright_fisheye"), dtype=torch.float32, device=self.device) 
+        self.K_frontleft_depth = torch.tensor(load_intrinsic("frontleft_info.yaml",  "frontleft_depth_intrinsic"), dtype=torch.float32, device=self.device) 
+        self.K_frontleft_fisheye = torch.tensor(load_intrinsic("frontleft_info.yaml",  "frontleft_fisheye_intrinsic"), dtype=torch.float32, device=self.device) 
+        self.K_frontright_depth = torch.tensor(load_intrinsic("frontright_info.yaml",  "frontright_depth_intrinsic"), dtype=torch.float32, device=self.device) 
+        self.K_frontright_fisheye = torch.tensor(load_intrinsic("frontright_info.yaml",  "frontright_fisheye_intrinsic"), dtype=torch.float32, device=self.device) 
+        
         # -------------------- Frame & Topic --------------------
 
         # Frame ID
@@ -101,55 +122,25 @@ class TraversabilitytoOccupancygridNode(Node):
         self.odom_frame = "spot1/base/spot/odom"    # iwshim. 25.05.30
 
         # Topic name 
-        self.depth_base = "/spot1/base/spot/depth"
-        self.rgb_base = "/spot1/base/spot/camera"
         self.odom_topic = "/spot1/base/spot/odometry" # iwshim. 25.05.30
-        self.merge_topic = "/spot1/base/spot/depth/merge_front"
         self.accum_topic = "/spot1/base/spot/depth/accum_front"
         self.occup_topic = "/spot1/base/spot/depth/occup_front"
 
 
         # -------------------- Publisher  --------------------
         
-        self.pub_merge = self.create_publisher(PointCloud2, self.merge_topic, 10)
         self.pub_accum = self.create_publisher(PointCloud2, self.accum_topic, 10)
         self.pub_occup = self.create_publisher(OccupancyGrid, self.occup_topic, 10)
         self.pub_normal = self.create_publisher(Marker, "/spot1/base/spot/depth/normal_front", 10) #mhlee 25.06.23
 
 
-        # -------------------- Subscriber & Syncronizer  --------------------
-        self.create_subscription(
-            CameraInfo,
-            f"{self.depth_base}/frontleft/camera_info",
-            lambda m: self._camera_info_cb(m, "frontleft_depth"), 
-            10
-        )
-        self.create_subscription(
-            CameraInfo,
-            f"{self.depth_base}/frontright/camera_info",
-            lambda m: self._camera_info_cb(m, "frontright_depth"),
-            10
-        )
-
-        self.create_subscription(
-            CameraInfo,
-            f"{self.rgb_base}/frontleft/camera_info",
-            lambda m: self._camera_info_cb(m, "frontleft_rgb"), \
-            10
-        )
-        self.create_subscription(
-            CameraInfo,
-            f"{self.rgb_base}/frontright/camera_info",
-            lambda m: self._camera_info_cb(m, "frontright_rgb"), 
-            10
-        )
-     
+        # -------------------- Subscriber & Syncronizer  --------------------    
         # Subscriber for main Data
-        self.sub_leftdepth  = Subscriber(self, Image, f"{self.depth_base}/frontleft/image")
-        self.sub_rightdepth = Subscriber(self, Image, f"{self.depth_base}/frontright/image")
+        self.sub_leftdepth  = Subscriber(self, Image, "/spot1/base/spot/depth/frontleft/image")
+        self.sub_rightdepth = Subscriber(self, Image, "/spot1/base/spot/depth/frontright/image")
         self.sub_odom  = Subscriber(self, Odometry, self.odom_topic) # iwshim. 25.05.30
-        self.sub_leftrgb = Subscriber(self, Image, f"{self.rgb_base}/frontleft/image")
-        self.sub_rightrgb = Subscriber(self, Image, f"{self.rgb_base}/frontright/image")
+        self.sub_leftrgb = Subscriber(self, Image, "/spot1/base/spot/camera/frontleft/image")
+        self.sub_rightrgb = Subscriber(self, Image, "/spot1/base/spot/camera/frontright/image")
 
         self.sync = ApproximateTimeSynchronizer(
             [self.sub_leftdepth, self.sub_rightdepth, self.sub_leftrgb, self.sub_rightrgb, self.sub_odom], # iwshim. 25.05.30
@@ -162,54 +153,68 @@ class TraversabilitytoOccupancygridNode(Node):
 # ────────────────────────────────────────────────────────────────────────────────────────────────
 # ──────────────────────────────── callback 함수 ──────────────────────────────────────────
 # ────────────────────────────────────────────────────────────────────────────────────────────────
-    
-        # ───────────── camera callback ─────────────  
-    def _camera_info_cb(self, msg: CameraInfo, camera_id: str): 
-        self.K[camera_id] = np.array(msg.k).reshape(3, 3)   
-
     # ───────────── occupancy callback ─────────────  # mhlee 25.06.19
 
-    def occupancy_cb(self, msg_leftdepth : Image, msg_rightdepth : Image, msg_leftrgb : Image, msg_rightrgb : Image, msg_odom : Odometry):
-
+    def occupancy_cb(self, msg_leftdepth : Image, msg_rightdepth : Image, msg_leftrgb : Image, msg_rightrgb : Image, msg_odom : Odometry): 
+        # initial fofr CPU
         stamp = rclpy.time.Time.from_msg(msg_leftdepth.header.stamp)
         self.get_logger().info("GPU-Accelerated Callback (PyTorch3D Version)")
 
-        pts_left  = self.depth_to_pts_frame_body(msg_leftdepth,  "frontleft_depth")
-        pts_right = self.depth_to_pts_frame_body(msg_rightdepth, "frontright_depth")
+                
+        depth_raw_left = self.bridge.imgmsg_to_cv2(msg_leftdepth, "passthrough")  ## 16UC1 → np.ndarray
+        depth_raw_right = self.bridge.imgmsg_to_cv2(msg_rightdepth, "passthrough")  ## 16UC1 → np.ndarray
 
-        # -- GPU start -- 
-        pts_left_body_gpu = torch.tensor(pts_left, dtype=torch.float32, device=self.device)
-        pts_right_body_gpu = torch.tensor(pts_right, dtype=torch.float32, device=self.device)
-        
-        traversability_left = self.traversability(msg_leftrgb, self.model, self.proxy_model)
-        traversability_right = self.traversability(msg_rightrgb, self.model, self.proxy_model) # output 1xHxW image
+        cv_image_left_rgb = self.bridge.imgmsg_to_cv2(msg_leftrgb, "bgr8")
+        pil_image_left_rgb = PILImage.fromarray(cv_image_left_rgb)
 
-        pts_with_traversability_left = self.merge_traversability_to_pointcloud_frame_body(pts_left_body_gpu, traversability_left, "frontleft_rgb")
-        pts_with_traversability_right = self.merge_traversability_to_pointcloud_frame_body(pts_right_body_gpu, traversability_right, "frontright_rgb")
-
-        pts_with_traversability_body = torch.cat([pts_with_traversability_left, pts_with_traversability_right], dim=0) # 지금은 중복된것을 torch.cat으로 했는데 , 보수적인 값으로 추정하면서도 연산에 방해안되는 것으로 바꿔보기(Important)
-
-        pts_with_traversability_downsampled = self.voxel_downsample_mean_traversability(pts_with_traversability_body, 0.05)
+        cv_image_right_rgb = self.bridge.imgmsg_to_cv2(msg_rightrgb, "bgr8")
+        pil_image_right_rgb = PILImage.fromarray(cv_image_right_rgb)
 
         pos = msg_odom.pose.pose.position
         ori = msg_odom.pose.pose.orientation
-        T = self.transform_to_matrix(pos, ori) 
-        T_gpu = torch.tensor(T, dtype=torch.float32, device=self.device) 
+        T_odom = self.transform_to_matrix(pos, ori) 
+        T_odom_gpu = torch.tensor(T_odom, dtype=torch.float32, device=self.device) 
+
+        depth_m_left   = torch.tensor(depth_raw_left.astype(np.float32) / 1000.0, device=self.device) ## mm → m
+        depth_m_right   = torch.tensor(depth_raw_right.astype(np.float32) / 1000.0, device=self.device) ## mm → m
+        depth_m_left[depth_m_left > 3.0] = 0.0                               ## 5 m 초과 마스킹
+        depth_m_right[depth_m_right > 3.0] = 0.0                               ## 5 m 초과 마스킹
+               
+        image_tensor_left_rgb = self.transform(pil_image_left_rgb).unsqueeze(0).to(self.device)
+        image_tensor_right_rgb = self.transform(pil_image_right_rgb).unsqueeze(0).to(self.device)
+
+        # -- GPU start -- 
+        pts_left_body_gpu  = self.depth_to_pts_frame_body(depth_m_left, self.K_frontleft_depth, self.T_body_to_frontleft_depth)
+        pts_right_body_gpu = self.depth_to_pts_frame_body(depth_m_right, self.K_frontright_depth, self.T_body_to_frontright_depth)
+        self.get_logger().info(f"pts_left_body_gpu shape: {pts_left_body_gpu.shape}")
+    
+        traversability_left = self.traversability(image_tensor_left_rgb , self.model, self.proxy_model)
+        traversability_right = self.traversability(image_tensor_right_rgb, self.model, self.proxy_model) # output 1xHxW image
+
+        pts_with_traversability_left = self.merge_traversability_to_pointcloud_frame_body(pts_left_body_gpu, traversability_left, self.K_frontleft_fisheye, self.T_body_to_frontleft_fisheye)
+        pts_with_traversability_right = self.merge_traversability_to_pointcloud_frame_body(pts_right_body_gpu, traversability_right, self.K_frontright_fisheye, self.T_body_to_frontright_fisheye)
+        self.get_logger().info(f"pts_with_traversability_left shape: {pts_with_traversability_left.shape if pts_with_traversability_left is not None else 'None'}")
+
+        pts_with_traversability_body = torch.cat([pts_with_traversability_left, pts_with_traversability_right], dim=0) # 지금은 중복된것을 torch.cat으로 했는데 , 보수적인 값으로 추정하면서도 연산에 방해안되는 것으로 바꿔보기(Important)
+        self.get_logger().info(f"pts_with_traversability_body shape: {pts_with_traversability_body.shape}")
+
+        pts_with_traversability_downsampled = self.voxel_downsample_mean_traversability(pts_with_traversability_body, 0.05)
+        self.get_logger().info(f"pts_with_traversability_downsampled shape: {pts_with_traversability_downsampled.shape}")
 
         points_xyz = pts_with_traversability_downsampled[:, :3] 
         points_homo = torch.cat([points_xyz, torch.ones(points_xyz.shape[0], 1, device=self.device)], dim=1) 
 
-        points_world = (T_gpu @ points_homo.T).T[:, :3] 
+        points_world = (T_odom_gpu @ points_homo.T).T[:, :3] 
         points_final = torch.cat([points_world, pts_with_traversability_downsampled[:, 3:4]], dim=1) 
-        
-        points_final_cpu = points_final.cpu().numpy()
         # -- GPU end -- 
+
+        points_final_cpu = points_final.cpu().numpy()
 
         og = self.pointcloud_with_traversability_to_occupancy_grid(stamp=stamp, 
             frame=self.odom_frame, 
             pts_with_t=points_final_cpu,
             resolution=0.1, 
-            grid_size=150, 
+            grid_size=80, 
             center_xy=(pos.x, pos.y), 
         )
 
@@ -217,6 +222,109 @@ class TraversabilitytoOccupancygridNode(Node):
         self.pub_accum.publish(pc)
         self.pub_occup.publish(og)
 
+
+
+
+# ────────────────────────────────────────────────────────────────────────────────────────────────
+# ──────────────────────────────── depth Image → 3-D 포인트 변환 ────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────────────────────────
+    @measure_time
+    def depth_to_pts_frame_body(self, depth_m: torch.Tensor, K : torch.Tensor, T: torch.Tensor) -> torch.Tensor:
+       
+        # 픽셀 그리드 생성
+        h, w = depth_m.shape
+        fx, fy, cx, cy = K[0,0], K[1,1], K[0,2], K[1,2]
+        u = torch.arange(w, device=self.device).float().repeat(h, 1)
+        v = torch.arange(h, device=self.device).float().repeat(w, 1).T
+
+        # 핀홀 역변환: (u,v,depth) → (x,y,z)
+        z = depth_m
+        x = (u - cx) * z / fx
+        y = (v - cy) * z / fy
+        
+        valid_mask = z > 0.1
+        pts_cam = torch.stack((x[valid_mask], y[valid_mask], z[valid_mask]), dim=1)
+        pts_cam_homo = torch.cat([pts_cam, torch.ones(pts_cam.shape[0], 1, device=self.device)], dim=1)
+        pts_body_homo = T @ pts_cam_homo.T 
+        pts_body = pts_body_homo[:3].T 
+
+        return pts_body
+
+
+# ────────────────────────────────────────────────────────────────────────────────────────────────
+# ──────────────────────────────── Traversability 함수 ──────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    @measure_time
+    def load_model(self, model_path):
+        fix_seed(1)
+        model = PSPNET_RADIO_SSL(in_channels=256, flow_steps=8, freeze_backbone=True, flow='fast') # 이 파라미터들 어떤게 optimized한지 생각해보기 (important)
+        proxy_model = Proxy(num_proxies=256, dim=256)
+        checkpoint = torch.load(model_path, map_location='cpu')
+        model.local_extractor.load_state_dict(checkpoint['local_extractor'], strict=False)
+        model.nf_flows.load_state_dict(checkpoint['nf_flows'], strict=False)
+        proxy_model.positive_center.data = checkpoint['positive_center']
+        # proxy_model.proxy_u.data = checkpoint['proxy_u']
+        # proxy_model.negative_centers.data = checkpoint['negative_centers']
+        model.eval()
+        proxy_model.eval()
+        return model.cuda(), proxy_model.cuda()
+    
+    @measure_time
+    def traversability(self, image_tensor : torch.Tensor , model, proxy_model): # 세로로 넣었다가, 세로로 출력되는 것으로 바꾸고, 시작과 끝에 세로-> 가로 / 가로 -> 세로 넣어야함(important)
+        use_dummy = True  
+
+        if use_dummy:
+            self.get_logger().warn("Using dummy traversability data!")
+            H, W = 480, 640
+            dummy_map = torch.zeros((H, W), device=self.device)
+            dummy_map[:, W // 2 :] = 1.0 
+            
+            return dummy_map
+    
+        similarity_map = model.inference(image_tensor, proxy_model)
+        
+        resized_map = transforms.functional.resize(similarity_map, image_tensor.shape[2:], interpolation=transforms.InterpolationMode.BILINEAR) # 이것도 Interpolation 방법 생각해보기(Important)
+        
+        sim_np = resized_map.squeeze().cpu().numpy()
+        sim_norm = (sim_np - sim_np.min()) / (sim_np.max() - sim_np.min() + 1e-8)
+
+        return sim_norm
+
+
+
+# ────────────────────────────────────────────────────────────────────────────────────────────────
+# ──────────────────────────────── Traversability projection 함수 ───────────────────────────
+# ────────────────────────────────────────────────────────────────────────────────────────────────
+    @measure_time
+    def merge_traversability_to_pointcloud_frame_body(self, pts_body: torch.Tensor, traversability_img: torch.Tensor, K_rgb : torch.Tensor, T_rgb_to_body : torch.Tensor) -> Optional[torch.Tensor]:
+
+
+        
+        N = pts_body.shape[0]
+        pts4 = torch.cat([pts_body, torch.ones(N, 1, device=self.device)], dim=1) 
+
+
+        T_body_to_rgb = torch.inverse(T_rgb_to_body) 
+
+        pts_rgb = pts4 @ T_body_to_rgb.T[:, :3]
+
+        x, y, z = pts_rgb[:, 0], pts_rgb[:, 1], pts_rgb[:, 2]
+
+        fx, fy = K_rgb[0, 0], K_rgb[1, 1]
+        cx, cy = K_rgb[0, 2], K_rgb[1, 2]
+
+        u = (fx * x / z + cx)
+        v = (fy * y / z + cy)
+
+        H, W = traversability_img.shape
+        valid = (z > 0.1) & (z < 5.0) & (u >= 0) & (u < W) & (v >= 0) & (v < H) 
+
+        pts_body_valid = pts_body[valid]
+        t = traversability_img[v[valid].long(), u[valid].long()] 
+
+        pts_with_t = torch.cat([pts_body_valid, t.unsqueeze(1)], dim=1) # (N, 4)
+        return pts_with_t
 
 # ────────────────────────────────────────────────────────────────────────────────────────────────
 # ──────────────────────────────── Downsampling 관련 함수 ──────────────────────────────────────────
@@ -258,58 +366,6 @@ class TraversabilitytoOccupancygridNode(Node):
 
 
 # ────────────────────────────────────────────────────────────────────────────────────────────────
-# ──────────────────────────────── Traversability 관련 함수 ──────────────────────────────────────────
-# ────────────────────────────────────────────────────────────────────────────────────────────────
-
-    @measure_time
-    def load_model(self, model_path):
-        fix_seed(1)
-        model = PSPNET_RADIO_SSL(in_channels=256, flow_steps=8, freeze_backbone=True, flow='fast') # 이 파라미터들 어떤게 optimized한지 생각해보기 (important)
-        proxy_model = Proxy(num_proxies=256, dim=256)
-        checkpoint = torch.load(model_path, map_location='cpu')
-        model.local_extractor.load_state_dict(checkpoint['local_extractor'], strict=False)
-        model.nf_flows.load_state_dict(checkpoint['nf_flows'], strict=False)
-        proxy_model.positive_center.data = checkpoint['positive_center']
-        # proxy_model.proxy_u.data = checkpoint['proxy_u']
-        # proxy_model.negative_centers.data = checkpoint['negative_centers']
-        model.eval()
-        proxy_model.eval()
-        return model.cuda(), proxy_model.cuda()
-    
-    @measure_time
-    def traversability(self, image_msg : Image, model, proxy_model): # 세로로 넣었다가, 세로로 출력되는 것으로 바꾸고, 시작과 끝에 세로-> 가로 / 가로 -> 세로 넣어야함(important)
-        use_dummy = True  
-
-        if use_dummy:
-            self.get_logger().warn("Using dummy traversability data!")
-            H, W = image_msg.height, image_msg.width
-            dummy_map = torch.zeros((H, W), device=self.device)
-            dummy_map[:, W // 2:] = 1.0 
-            return dummy_map
-    
-        cv_image = self.bridge.imgmsg_to_cv2(image_msg, "bgr8")
-        pil_image = PILImage.fromarray(cv_image)
-
-        transform = transforms.Compose([
-        transforms.Resize((512, 512)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[103.939/255, 116.779/255, 123.68/255],
-                            std=[0.229, 0.224, 0.225]),
-        ]) # DTC에 맞춰서 mean, std, Resize값..(?) 변경해야함 (important)
-        
-        image_tensor = transform(pil_image).unsqueeze(0).cuda()
-        similarity_map = model.inference(image_tensor, proxy_model)
-        
-        resized_map = transforms.functional.resize(similarity_map, image_tensor.shape[2:], interpolation=transforms.InterpolationMode.BILINEAR) # 이것도 Interpolation 방법 생각해보기(Important)
-        
-        sim_np = resized_map.squeeze().cpu().numpy()
-        sim_norm = (sim_np - sim_np.min()) / (sim_np.max() - sim_np.min() + 1e-8)
-
-        return sim_norm
-
-
-
-# ────────────────────────────────────────────────────────────────────────────────────────────────
 # ──────────────────────────────── Occupancygrid 관련 함수 ──────────────────────────────────────────
 # ────────────────────────────────────────────────────────────────────────────────────────────────
     @staticmethod
@@ -338,13 +394,12 @@ class TraversabilitytoOccupancygridNode(Node):
         mask = (indx >= 0) & (indx < grid_size) & (indy >= 0) & (indy < grid_size)
         indx, indy, t = indx[mask], indy[mask], t[mask]
 
-        grid = np.full((grid_size, grid_size), -1, dtype=np.int8)
-        traversability_value = np.round((1 - t) * 100).astype(np.int8)  # 0이 주행가능, 100이 주행불가능
-        for x_idx, y_idx, trav in zip(indx, indy, traversability_value):
-            if grid[y_idx, x_idx] == -1:
-                grid[y_idx, x_idx] = trav
-            else:
-                grid[y_idx, x_idx] = min(grid[y_idx, x_idx], trav) # 최소값으로 저장
+        grid = np.full(grid_size * grid_size, 101, dtype=np.int16)
+        traversability_value = np.round((1 - t) * 100).astype(np.int16)  # 0이 주행가능, 100이 주행불가능
+        flat_indices = indy * grid_size + indx
+        np.minimum.at(grid, flat_indices, traversability_value)
+        grid[grid == 101] = -1
+        grid = grid.reshape((grid_size, grid_size)).astype(np.int8)
 
         og = OccupancyGrid()
         og.header.stamp = stamp.to_msg()
@@ -363,67 +418,7 @@ class TraversabilitytoOccupancygridNode(Node):
 
 # ────────────────────────────────────────────────────────────────────────────────────────────────
 # ──────────────────────────────── 기타 ──────────────────────────────────────────
-# ────────────────────────────────────────────────────────────────────────────────────────────────
-
-    # ───────────── depth Image → 3-D 포인트 변환 ─────────────
-    @measure_time
-    def depth_to_pts_frame_body(self, msg: Image, camera_id: str) -> Optional[np.ndarray]:
-        
-        K = self.K[camera_id]
-
-        depth_raw = self.bridge.imgmsg_to_cv2(msg, "passthrough")  ## 16UC1 → np.ndarray
-        depth_m   = depth_raw.astype(np.float32) / 1000.0          ## mm → m
-        depth_m[depth_m > 5.0] = 0.0                               ## 5 m 초과 마스킹
-
-        # 픽셀 그리드 생성
-        h, w = depth_m.shape
-        fx, fy, cx, cy = K[0,0], K[1,1], K[0,2], K[1,2]
-        u, v = np.meshgrid(np.arange(w), np.arange(h))
-
-        # 핀홀 역변환: (u,v,depth) → (x,y,z)
-        z = depth_m
-        x = (u - cx) * z / fx
-        y = (v - cy) * z / fy
-        
-        pts4 = np.vstack((x.ravel(), y.ravel(), z.ravel(), np.ones(z.size)))  ## 4×N
-        pts4 = pts4[:, pts4[2] > 0.1]            ## z(깊이) 0.1 m 이하 필터링
-
-        # 카메라 → 바디 좌표 변환
-        T = self.extr[camera_id]                    ## 4×4 변환 행렬
-        pts_body = (T @ pts4)[:3].T              ## 결과 (N,3)
-        
-        return pts_body.astype(np.float32)
-
-    @measure_time
-    def merge_traversability_to_pointcloud_frame_body(self, pts_body: torch.Tensor, traversability_img: torch.Tensor, prefix_rgb: str) -> Optional[torch.Tensor]:
-
-        N = pts_body.shape[0]
-        pts4 = torch.cat([pts_body, torch.ones(N, 1, device=self.device)], dim=1) 
-
-
-        T_rgb_to_body = torch.tensor(self.extr[prefix_rgb], dtype=torch.float32, device=self.device) 
-        T_body_to_rgb = torch.inverse(T_rgb_to_body) 
-        K_rgb = torch.tensor(self.K[prefix_rgb], dtype=torch.float32, device=self.device) 
-
-        pts_rgb = pts4 @ T_body_to_rgb.T[:, :3]
-
-        x, y, z = pts_rgb[:, 0], pts_rgb[:, 1], pts_rgb[:, 2]
-
-        fx, fy = K_rgb[0, 0], K_rgb[1, 1]
-        cx, cy = K_rgb[0, 2], K_rgb[1, 2]
-
-        u = (fx * x / z + cx)
-        v = (fy * y / z + cy)
-
-        H, W = traversability_img.shape
-        valid = (z > 0.1) & (z < 5.0) & (u >= 0) & (u < W) & (v >= 0) & (v < H) 
-
-        pts_body_valid = pts_body[valid]
-        t = traversability_img[v[valid].long(), u[valid].long()] 
-
-        pts_with_t = torch.cat([pts_body_valid, t.unsqueeze(1)], dim=1) # (N, 4)
-        return pts_with_t
-        
+# ────────────────────────────────────────────────────────────────────────────────────────────────     
 
         
     @staticmethod
