@@ -75,7 +75,7 @@ class TraversabilitytoOccupancygridNode(Node):
         # -------------------- Parameter  --------------------
         package_share_directory = get_package_share_directory('depth_to_pointcloud_pub')
         # model_path = os.path.join(package_share_directory, 'models', '45.pth') #모델파일 경로 추후에 바꿔야함(important)
-        model_path = '/home/ros/workspace/src/front_depth_to_costmap/depth_to_pointcloud_pub/depth_to_pointcloud_pub/models/45.pth'
+        model_path = '/home/ros/workspace/src/front_depth_to_costmap/depth_to_pointcloud_pub/depth_to_pointcloud_pub/models/1_0715.pth'
         self.model, self.proxy_model = self.load_model(model_path) 
         self.device = torch.device("cuda:0")
         self.transform = transforms.Compose([
@@ -186,20 +186,16 @@ class TraversabilitytoOccupancygridNode(Node):
         # -- GPU start -- 
         pts_left_body_gpu  = self.depth_to_pts_frame_body(depth_m_left, self.K_frontleft_depth, self.T_body_to_frontleft_depth)
         pts_right_body_gpu = self.depth_to_pts_frame_body(depth_m_right, self.K_frontright_depth, self.T_body_to_frontright_depth)
-        self.get_logger().info(f"pts_left_body_gpu shape: {pts_left_body_gpu.shape}")
     
         traversability_left = self.traversability(image_tensor_left_rgb , self.model, self.proxy_model)
         traversability_right = self.traversability(image_tensor_right_rgb, self.model, self.proxy_model) # output 1xHxW image
 
         pts_with_traversability_left = self.merge_traversability_to_pointcloud_frame_body(pts_left_body_gpu, traversability_left, self.K_frontleft_fisheye, self.T_body_to_frontleft_fisheye)
         pts_with_traversability_right = self.merge_traversability_to_pointcloud_frame_body(pts_right_body_gpu, traversability_right, self.K_frontright_fisheye, self.T_body_to_frontright_fisheye)
-        self.get_logger().info(f"pts_with_traversability_left shape: {pts_with_traversability_left.shape if pts_with_traversability_left is not None else 'None'}")
 
         pts_with_traversability_body = torch.cat([pts_with_traversability_left, pts_with_traversability_right], dim=0) # 지금은 중복된것을 torch.cat으로 했는데 , 보수적인 값으로 추정하면서도 연산에 방해안되는 것으로 바꿔보기(Important)
-        self.get_logger().info(f"pts_with_traversability_body shape: {pts_with_traversability_body.shape}")
 
         pts_with_traversability_downsampled = self.voxel_downsample_mean_traversability(pts_with_traversability_body, 0.05)
-        self.get_logger().info(f"pts_with_traversability_downsampled shape: {pts_with_traversability_downsampled.shape}")
 
         points_xyz = pts_with_traversability_downsampled[:, :3] 
         points_homo = torch.cat([points_xyz, torch.ones(points_xyz.shape[0], 1, device=self.device)], dim=1) 
@@ -356,13 +352,23 @@ class TraversabilitytoOccupancygridNode(Node):
         num_unique_voxels = unique_voxel_indices.shape[0]
         
         # 각 고유 복셀에 속한 포인트들의 XYZT 합계 계산
-        sum_points_per_voxel = torch.zeros((num_unique_voxels, 4), device=points_with_t_gpu.device)
-        sum_points_per_voxel.scatter_add_(0, inverse_indices.unsqueeze(1).expand(-1, 4), points_with_t_gpu)
-
-        # 합계를 개수로 나누어 평균(중심점) 계산
-        mean_points_per_voxel = sum_points_per_voxel / counts.unsqueeze(1)
+        # sum_points_per_voxel = torch.zeros((num_unique_voxels, 4), device=points_with_t_gpu.device)
+        # sum_points_per_voxel.scatter_add_(0, inverse_indices.unsqueeze(1).expand(-1, 4), points_with_t_gpu)
         
-        return mean_points_per_voxel
+        # 합계를 개수로 나누어 평균(중심점) 계산
+        # mean_points_per_voxel = sum_points_per_voxel / counts.unsqueeze(1)
+
+        sum_xyz = torch.zeros((num_unique_voxels, 3), device=points_with_t_gpu.device)
+        sum_xyz.scatter_add_(0, inverse_indices.unsqueeze(1).expand(-1, 3), points_with_t_gpu[:, :3])
+        mean_xyz = sum_xyz / counts.unsqueeze(1)
+
+        min_t = torch.full((num_unique_voxels, ), float('inf'), device=points_with_t_gpu.device)
+        min_t = min_t.scatter_reduce(0, inverse_indices, points_with_t_gpu[:, 3], reduce='amin')
+
+        result = torch.cat([mean_xyz, min_t.unsqueeze(1)], dim=1)
+
+        
+        return result
 
 
 # ────────────────────────────────────────────────────────────────────────────────────────────────
