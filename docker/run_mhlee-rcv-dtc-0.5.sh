@@ -1,5 +1,5 @@
 #!/bin/bash
-IMAGE_NAME="mhlee/rcv-dtc:0.5-traversability-involved"
+IMAGE_NAME="mhlee/rcv-dtc:0.51-tensorRT"
 
 # Define environment variables for enabling graphical output for the container.
 # XAUTH 이슈로 주석처리함
@@ -28,7 +28,7 @@ cd ..
 
 echo "---------------------"
 RUN_COMMAND="docker run \
-  --name mhlee_test_travmodel_test \
+  --name mhlee_test_tensorRT \
   --ulimit rtprio=99 \
   --cap-add=sys_nice \
   --privileged \

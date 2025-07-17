@@ -23,8 +23,11 @@ from functools import wraps
 import torch.nn.functional as F #mhlee 25.07.08
 import torchvision.transforms as transforms #mhlee 25.07.10
 
-from depth_to_pointcloud_pub.models.fastflow_SSL_n import PSPNET_RADIO_SSL #mhlee 25.07.10
-from depth_to_pointcloud_pub.models.proxy_n_c import Proxy #mhlee 25.07.10
+# from depth_to_pointcloud_pub.models.fastflow_SSL_n import PSPNET_RADIO_SSL #mhlee 25.07.10
+# from depth_to_pointcloud_pub.models.proxy_n_c import Proxy #mhlee 25.07.10
+import pycuda.driver as cuda
+import pycuda.autoinit
+import tensorrt as trt
 from PIL import Image as PILImage
 import random
 
@@ -62,6 +65,75 @@ def fix_seed(seed=1):
     torch.backends.cudnn.benchmark = False
 
 
+
+
+
+
+# ────────────────────── utils for inference ──────────────────────
+
+def prepare_image(image , input_size=(512, 512)):
+    
+    original_size = image.size
+    transform = transforms.Compose([
+        transforms.Resize(input_size),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[103.939 / 255, 116.779 / 255, 123.68 / 255],
+                            std=[0.229, 0.224, 0.225]),
+    ])
+    tensor = transform(image).unsqueeze(0).contiguous().cuda()
+    print("[DEBUG] Input Tensor min/max:", tensor.min().item(), tensor.max().item())
+
+    return tensor, original_size
+
+def load_trt_engine(engine_path):
+    with open(engine_path, "rb") as f, trt.Runtime(TRT_LOGGER) as runtime:
+        engine = runtime.deserialize_cuda_engine(f.read())
+    return engine
+
+def allocate_trt_buffers(engine):
+    inputs, outputs, bindings = [], [], []
+    stream = cuda.Stream()
+    if stream is None:
+        print("[ERROR] Failed to create CUDA stream!")
+    else:
+        print("[INFO] CUDA stream created successfully.")
+
+    for binding in engine:
+        shape = engine.get_tensor_shape(binding)  # ✅ 수정: get_binding_shape → get_tensor_shape
+        size = trt.volume(shape)
+        dtype = trt.nptype(engine.get_tensor_dtype(binding))  # ✅ 수정: get_binding_dtype → get_tensor_dtype
+        
+        
+        print(f"[DEBUG] Binding: {binding}")
+        print(f"        Shape: {shape}")
+        print(f"        Dtype: {dtype}")
+        print(f"        Size: {size}")
+        
+        host_mem = cuda.pagelocked_empty(size, dtype)
+        device_mem = cuda.mem_alloc(host_mem.nbytes)
+        bindings.append(int(device_mem))
+        if engine.get_tensor_mode(binding) == trt.TensorIOMode.INPUT:
+            inputs.append((host_mem, device_mem))
+        else:
+            outputs.append((host_mem, device_mem))
+    return inputs, outputs, bindings, stream
+
+
+def infer_trt_image(context, bindings, inputs, outputs, stream, input_tensor):
+    np.copyto(inputs[0][0], input_tensor.cpu().ravel())                             #이거왜 .cpu 붙였지?? (important)
+    cuda.memcpy_htod_async(inputs[0][1], inputs[0][0], stream)
+    context.execute_v2(bindings=bindings)
+    cuda.memcpy_dtoh_async(outputs[0][0], outputs[0][1], stream)
+    stream.synchronize()
+    
+    output = outputs[0][0]
+    print("[DEBUG] Raw Output min/max:", np.min(output), np.max(output))
+
+
+    return torch.tensor(output).view(1, 1, 512, 512)  # ✅ 올바른 shape
+
+TRT_LOGGER = trt.Logger(trt.Logger.WARNING)
+
 # ────────────────────── main node ──────────────────────
 class TraversabilitytoOccupancygridNode(Node):
 
@@ -74,17 +146,21 @@ class TraversabilitytoOccupancygridNode(Node):
 
         # -------------------- Parameter  --------------------
         package_share_directory = get_package_share_directory('depth_to_pointcloud_pub')
-        # model_path = os.path.join(package_share_directory, 'models', '45.pth') #모델파일 경로 추후에 바꿔야함(important)
-        model_path = '/home/ros/workspace/src/front_depth_to_costmap/depth_to_pointcloud_pub/depth_to_pointcloud_pub/models/1_0715.pth'
-        self.model, self.proxy_model = self.load_model(model_path) 
         self.device = torch.device("cuda:0")
-        self.transform = transforms.Compose([
-            transforms.Resize((512, 512)),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[103.939/255, 116.779/255, 123.68/255],
-                                std=[0.229, 0.224, 0.225]),
-        ]) # 이거 정규화 수치 나중에 바꿔야할듯(important)
+        try:
+            self.pycuda_device = cuda.Device(0)
+            self.pycuda_context = self.pycuda_device.make_context()
+            self.pycuda_context.push() 
+            self.get_logger().info(f"PyCUDA Context created and pushed for device {self.pycuda_device.name()}.")
+        except Exception as e:
+            self.get_logger().error(f"Failed to create/push PyCUDA Context: {e}")
+            raise # 컨텍스트 없이는 진행할 수 없으므로 에러 발생
 
+        # -------------------- Parameter for inference --------------------
+        self.trt_engine_path = "/home/ros/workspace/src/front_depth_to_costmap/depth_to_pointcloud_pub/depth_to_pointcloud_pub/1_0715.plan"
+        self.engine = load_trt_engine(self.trt_engine_path)
+        self.execution_context = self.engine.create_execution_context()
+        self.inputs, self.outputs, self.bindings, self.stream = allocate_trt_buffers(self.engine)
 
         # -------------------- Parameter  --------------------
         self.depth_camera_ids = ["frontleft_depth", "frontright_depth"] 
@@ -132,6 +208,8 @@ class TraversabilitytoOccupancygridNode(Node):
         self.pub_accum = self.create_publisher(PointCloud2, self.accum_topic, 10)
         self.pub_occup = self.create_publisher(OccupancyGrid, self.occup_topic, 10)
         self.pub_normal = self.create_publisher(Marker, "/spot1/base/spot/depth/normal_front", 10) #mhlee 25.06.23
+        self.pub_image_left = self.create_publisher(Image, "/spot1/base/spot/camera/similarity_left", 10)
+        self.pub_image_right = self.create_publisher(Image, "/spot1/base/spot/camera/similarity_right", 10)
 
 
         # -------------------- Subscriber & Syncronizer  --------------------    
@@ -156,6 +234,15 @@ class TraversabilitytoOccupancygridNode(Node):
     # ───────────── occupancy callback ─────────────  # mhlee 25.06.19
 
     def occupancy_cb(self, msg_leftdepth : Image, msg_rightdepth : Image, msg_leftrgb : Image, msg_rightrgb : Image, msg_odom : Odometry): 
+        try:
+            # 이미 생성된 컨텍스트를 현재 스레드에 push (활성화)
+            self.pycuda_context.push() 
+            self.get_logger().debug("PyCUDA Context pushed in callback.")
+        except Exception as e:
+            self.get_logger().error(f"Failed to push PyCUDA Context in callback: {e}")
+            # 컨텍스트 활성화 실패 시, GPU 작업은 불가능하므로 여기서 리턴하거나 예외 처리
+            return 
+        
         # initial fofr CPU
         stamp = rclpy.time.Time.from_msg(msg_leftdepth.header.stamp)
         self.get_logger().info("GPU-Accelerated Callback (PyTorch3D Version)")
@@ -178,18 +265,15 @@ class TraversabilitytoOccupancygridNode(Node):
         depth_m_left   = torch.tensor(depth_raw_left.astype(np.float32) / 1000.0, device=self.device) ## mm → m
         depth_m_right   = torch.tensor(depth_raw_right.astype(np.float32) / 1000.0, device=self.device) ## mm → m
         depth_m_left[depth_m_left > 5.0] = 0.0                               ## 5 m 초과 마스킹
-        depth_m_right[depth_m_right > 5.0] = 0.0                               ## 5 m 초과 마스킹
-               
-        image_tensor_left_rgb = self.transform(pil_image_left_rgb).unsqueeze(0).to(self.device)
-        image_tensor_right_rgb = self.transform(pil_image_right_rgb).unsqueeze(0).to(self.device)
+        depth_m_right[depth_m_right > 5.0] = 0.0         
+
+        traversability_left = self.process_directory_trt(pil_image_left_rgb)
+        traversability_right = self.process_directory_trt(pil_image_right_rgb)
 
         # -- GPU start -- 
         pts_left_body_gpu  = self.depth_to_pts_frame_body(depth_m_left, self.K_frontleft_depth, self.T_body_to_frontleft_depth)
         pts_right_body_gpu = self.depth_to_pts_frame_body(depth_m_right, self.K_frontright_depth, self.T_body_to_frontright_depth)
     
-        traversability_left = self.traversability(image_tensor_left_rgb , self.model, self.proxy_model)
-        traversability_right = self.traversability(image_tensor_right_rgb, self.model, self.proxy_model) # output 1xHxW image
-
         pts_with_traversability_left = self.merge_traversability_to_pointcloud_frame_body(pts_left_body_gpu, traversability_left, self.K_frontleft_fisheye, self.T_body_to_frontleft_fisheye)
         pts_with_traversability_right = self.merge_traversability_to_pointcloud_frame_body(pts_right_body_gpu, traversability_right, self.K_frontright_fisheye, self.T_body_to_frontright_fisheye)
 
@@ -214,10 +298,15 @@ class TraversabilitytoOccupancygridNode(Node):
             center_xy=(pos.x, pos.y), 
         )
 
-        # pc = self.build_pc(msg_leftdepth.header.stamp, self.odom_frame, points_final_cpu[:, :3])
-        # self.pub_accum.publish(pc)
+        pc = self.build_pc(msg_leftdepth.header.stamp, self.odom_frame, points_final_cpu[:, :3])
+        self.pub_accum.publish(pc)
         self.pub_occup.publish(og)
 
+        try:
+            self.pycuda_context.pop()
+            self.get_logger().debug("PyCUDA Context popped in callback.")
+        except Exception as e:
+            self.get_logger().error(f"Failed to pop PyCUDA Context in callback: {e}")
 
 
 
@@ -250,52 +339,39 @@ class TraversabilitytoOccupancygridNode(Node):
 # ────────────────────────────────────────────────────────────────────────────────────────────────
 # ──────────────────────────────── Traversability 함수 ──────────────────────────────────────────
 # ────────────────────────────────────────────────────────────────────────────────────────────────
+        
+    # @measure_time
+    # def traversability(self, image):
+    
+    #     engine_path = '/home/ros/workspace/src/front_depth_to_costmap/depth_to_pointcloud_pub/depth_to_pointcloud_pub/models/1_0715.pth'
+
+    #     engine = load_trt_engine(engine_path)
+    #     context = engine.create_execution_context()
+    #     inputs, outputs, bindings, stream = allocate_trt_buffers(engine)
+
+
+    #     result = process_directory_trt(
+    #     context, bindings, inputs, outputs, stream, image
+    #     )      
+
+    #     return result
 
     @measure_time
-    def load_model(self, model_path):
-        fix_seed(1)
-        model = PSPNET_RADIO_SSL(in_channels=256, flow_steps=8, freeze_backbone=True, flow='fast') # 이 파라미터들 어떤게 optimized한지 생각해보기 (important)
-        proxy_model = Proxy(num_proxies=256, dim=256)
-        checkpoint = torch.load(model_path, map_location='cpu')
-        model.local_extractor.load_state_dict(checkpoint['local_extractor'], strict=False)
-        model.nf_flows.load_state_dict(checkpoint['nf_flows'], strict=False)
-        proxy_model.positive_center.data = checkpoint['positive_center']
-        # proxy_model.proxy_u.data = checkpoint['proxy_u']
-        # proxy_model.negative_centers.data = checkpoint['negative_centers']
-        model.eval()
-        proxy_model.eval()
-        return model.cuda(), proxy_model.cuda()
-    
-    @measure_time
-    def traversability(self, image_tensor : torch.Tensor , model, proxy_model): # 세로로 넣었다가, 세로로 출력되는 것으로 바꾸고, 시작과 끝에 세로-> 가로 / 가로 -> 세로 넣어야함(important)
-        use_dummy = True  
+    def process_directory_trt(self, image):
 
-        if use_dummy:
-            self.get_logger().warn("Using dummy traversability data!")
-            H, W = 480, 640
-            dummy_map = torch.zeros((H, W), device=self.device)
-            dummy_map[:, W // 2 :] = 1.0 
-            
-            return dummy_map
-    
-        similarity_map = model.inference(image_tensor, proxy_model)
+        input_tensor, original_size = prepare_image(image)
+        result = infer_trt_image(self.execution_context, self.bindings, self.inputs, self.outputs, self.stream, input_tensor)
+        print("Raw TRT result:", result.min().item(), result.max().item())
+        resized_map = F.interpolate(result, size=original_size[::-1], mode='bilinear', align_corners=False)
         
-        resized_map = transforms.functional.resize(similarity_map, image_tensor.shape[2:], interpolation=transforms.InterpolationMode.BILINEAR) # 이것도 Interpolation 방법 생각해보기(Important)
-        
-        sim_np = resized_map.squeeze().cpu().numpy()
-        sim_norm = (sim_np - sim_np.min()) / (sim_np.max() - sim_np.min() + 1e-8)
 
-        return sim_norm
-
-
+        return resized_map.to(self.device)
 
 # ────────────────────────────────────────────────────────────────────────────────────────────────
 # ──────────────────────────────── Traversability projection 함수 ───────────────────────────
 # ────────────────────────────────────────────────────────────────────────────────────────────────
     @measure_time
     def merge_traversability_to_pointcloud_frame_body(self, pts_body: torch.Tensor, traversability_img: torch.Tensor, K_rgb : torch.Tensor, T_rgb_to_body : torch.Tensor) -> Optional[torch.Tensor]:
-
-
         
         N = pts_body.shape[0]
         pts4 = torch.cat([pts_body, torch.ones(N, 1, device=self.device)], dim=1) 
@@ -313,11 +389,11 @@ class TraversabilitytoOccupancygridNode(Node):
         u = (fx * x / z + cx)
         v = (fy * y / z + cy)
 
-        H, W = traversability_img.shape
+        H, W = traversability_img.shape[2], traversability_img.shape[3]
         valid = (z > 0.1) & (z < 5.0) & (u >= 0) & (u < W) & (v >= 0) & (v < H) 
 
         pts_body_valid = pts_body[valid]
-        t = traversability_img[v[valid].long(), u[valid].long()] 
+        t = traversability_img[0, 0, v[valid].long(), u[valid].long()]
 
         pts_with_t = torch.cat([pts_body_valid, t.unsqueeze(1)], dim=1) # (N, 4)
         return pts_with_t
