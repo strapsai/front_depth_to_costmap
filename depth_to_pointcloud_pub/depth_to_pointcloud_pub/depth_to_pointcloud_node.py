@@ -35,7 +35,7 @@ from geometry_msgs.msg import Point, Vector3 # mhlee 25.06.23
 import std_msgs.msg # mhlee 25.06.23
 import kornia.filters as KF #mhlee 25.07.08
 import torch.nn.functional as F #mhlee 25.07.08
-from pytorch3d.ops import knn_points, estimate_pointcloud_normals  #mhlee 25.07.09
+from pytorch3d.ops import iterative_closest_point, knn_points, estimate_pointcloud_normals  #mhlee 25.07.09
 
 def measure_time(func):
     @wraps(func)
@@ -64,6 +64,21 @@ class DepthToPointCloudNode(Node):
     def __init__(self):
         super().__init__("depth_to_pointcloud_node")
 
+        self.device = torch.device("cuda:0")
+
+        # -------------------- Occupancy Grid Parameters (나중에 지워) --------------------
+        self.resolution = 0.2
+        self.grid_size = 200 
+        self.center_xy = (11,0 , 8.0)
+        self.origin_x = self.center_xy[0] - 0.5 * self.grid_size * self.resolution
+        self.origin_y = self.center_xy[1] - 0.5 * self.grid_size * self.resolution
+        self.grid = np.full((self.grid_size, self.grid_size), -1, dtype=np.int8)
+        self.logodds_grid = np.zeros((self.grid_size, self.grid_size), dtype=np.float32)  # 0 → p=0.5
+
+        # -------------------- PointCloud accumulation parameter (나중에 지워) --------------------
+        self.accumulated_points = torch.empty((0, 3), dtype=torch.float32)
+        self.accumulated_normals = torch.empty((0, 3), dtype=torch.float32, device=self.device)
+
         # -------------------- Parameter  --------------------
         self.prefixes = ["frontleft", "frontright"]
         self.bridge = CvBridge()
@@ -75,7 +90,6 @@ class DepthToPointCloudNode(Node):
             "frontright": load_extrinsic_matrix("frontright_info.yaml", "body_to_frontright"),
         }
         
-        self.device = torch.device("cuda:0")
         self.clouds = np.zeros((1,3))
         self.clouds_time = np.empty((0,4)) #mhlee. 25.06.21
 
@@ -278,29 +292,66 @@ class DepthToPointCloudNode(Node):
         pts_tf_h = torch.matmul(T_gpu, pts_h.T).T
         pts_tf_gpu = pts_tf_h[:, :3]  # (N, 3) 최종 변환된 포인트 (GPU 텐서)
         # 
-        points_down_gpu = self._voxel_downsample_mean_pytorch(points_gpu = pts_tf_gpu, voxel_size=0.1)
-        normals_gpu = self.estimate_normals_pytorch3d(points_down_gpu, k=20)
+        points_down_gpu = self._voxel_downsample_mean_pytorch(points_gpu = pts_tf_gpu, voxel_size=0.2)
+        # normals_gpu = self.estimate_normals_pytorch3d(points_down_gpu, k=20)
         # normals_gpu = self.estimate_normals_jetfit_pytorch(points_down_gpu, k=20)
 
-        points_final = points_down_gpu.cpu().numpy()
-        normals_final = normals_gpu.cpu().numpy()
+        start_time = time.perf_counter()
+        # ========================= ICP 적용 부분 =========================
+        if not hasattr(self, 'accumulated_points') or self.accumulated_points.shape[0] == 0:
+            # 최초 프레임: 누적 변수 초기화
+            self.accumulated_points = points_down_gpu
+            # self.accumulated_normals = normals_gpu
+
+        else:
+            # ICP 수행: source = 새 점군, target = 누적 점군
+            icp_result = iterative_closest_point(
+                X=points_down_gpu.unsqueeze(0),             # source pointcloud (1, N, 3)
+                Y=self.accumulated_points.unsqueeze(0),     # target pointcloud (1, M, 3)
+                max_iterations=50,
+                estimate_scale=False,
+                verbose=False
+            )
+
+            # ICP 결과 변환 적용한 포인트클라우드
+            points_aligned = icp_result.Xt.squeeze(0)  # (N,3)
+            self.get_logger().info(f"[INFO] points before ICP shape: {points_aligned.shape}")
+
+            # 누적점군에 정합된 새 포인트클라우드 추가
+            self.accumulated_points = torch.cat([self.accumulated_points, points_aligned], dim=0)
+            self.get_logger().info(f"[INFO] points after ICP shape: {self.accumulated_points.shape}")
+
+            # self.accumulated_normals = torch.cat([self.accumulated_normals, normals_gpu], dim=0)
+        # ==================================================================
+            end_time = time.perf_counter()  # 종료 시각 기록
+            elapsed = end_time - start_time
+            self.get_logger().info(f"ICP 수행 시간: {elapsed*1000:.2f} ms")
+        # points_final = points_down_gpu.cpu().numpy() 
+        # normals_final = normals_gpu.cpu().numpy()
+
+        self.accumulated_points = self._voxel_downsample_mean_pytorch(points_gpu = self.accumulated_points, voxel_size=0.2)
+        self.get_logger().info(f"[INFO] accumulated_points shape: {self.accumulated_points.shape}")
 
 
-        og = self.pointcloud_to_occupancy_grid_withcost(
-            stamp=stamp,
-            frame=self.odom_frame, 
-            points=points_final,
-            resolution=0.05, 
-            grid_size=100, 
-            center_xy = (pos.x , pos.y),
-            normals = normals_final
-        )
+        points_final = self.accumulated_points.cpu().numpy()
+        # normals_final = self.accumulated_normals.cpu().numpy()
+
+
+        # og = self.pointcloud_to_occupancy_grid_withcost(
+        #     stamp=stamp,
+        #     frame=self.odom_frame, 
+        #     points=points_final,
+        #     resolution = self.resolution,
+        #     grid_size = self.grid_size,
+        #     center_xy = self.center_xy,
+        #     normals = normals_final
+        # )
 
         pc = self.build_pc(msg_left.header.stamp, self.odom_frame, points_final)
-        nm = self.build_nm(msg_left.header.stamp, points_final, normals_final, self.odom_frame)
+        # nm = self.build_nm(msg_left.header.stamp, points_final, normals_final, self.odom_frame)
         self.pub_accum.publish(pc)
-        self.pub_occup.publish(og)
-        self.pub_normal.publish(nm)
+        # self.pub_occup.publish(og)
+        # self.pub_normal.publish(nm)
 
 
         ########################### mhlee 25.07.08 #########################3
@@ -1260,6 +1311,88 @@ class DepthToPointCloudNode(Node):
         og.info.origin.position.z = -2.0 # mhlee 25.06.23
         og.data = grid.flatten(order='C').astype(int).tolist()
         return og
+
+
+    
+   # mhlee. 25.07.14
+    @measure_time
+    def occupancygrid_accumulate(self, stamp, frame: str, points: np.ndarray, normals):
+    
+        # Points to grid index
+        indx = np.floor((points[:,0] - self.origin_x) / self.resolution).astype(np.int32)
+        indy = np.floor((points[:,1] - self.origin_y) / self.resolution).astype(np.int32)
+        
+         # 사전에 미리 제거 했으나, 만일의 경우를 대비해서(segmentation fault) mask-out
+        mask = (indx >= 0) & (indx < self.grid_size) & (indy >= 0) & (indy < self.grid_size)
+        indx, indy = indx[mask], indy[mask]
+        normals = normals[mask]
+
+        up_vector = np.array([0,0,1], dtype=np.float32)
+        similarity = np.abs(normals @ up_vector)
+        cost_values = np.round((1 - similarity) * 100).astype(np.int8) # 0이 주행가능, 100이 주행불가능
+ 
+        for x_idx, y_idx, sim in zip(indx, indy, cost_values):
+            if self.grid[y_idx, x_idx] == -1:
+                self.grid[y_idx, x_idx] = sim
+            else:
+                self.grid[y_idx, x_idx] = max(self.grid[y_idx, x_idx], sim)
+
+
+        og = OccupancyGrid()
+        og.header.stamp = stamp.to_msg()
+        og.header.frame_id = frame
+        og.info.resolution = self.resolution
+        og.info.width = self.grid_size
+        og.info.height = self.grid_size
+        og.info.origin.position.x = self.origin_x
+        og.info.origin.position.y = self.origin_y
+        og.info.origin.position.z = 0.0
+        og.data = self.grid.flatten(order='C').astype(int).tolist()
+        return og
+    
+
+
+
+    
+   # mhlee. 25.07.14
+    @measure_time
+    def occupancygrid_accumulate_bayers(self, stamp, frame: str, points: np.ndarray, normals):
+    
+        # Points to grid index
+        indx = np.floor((points[:,0] - self.origin_x) / self.resolution).astype(np.int32)
+        indy = np.floor((points[:,1] - self.origin_y) / self.resolution).astype(np.int32)
+        
+         # 사전에 미리 제거 했으나, 만일의 경우를 대비해서(segmentation fault) mask-out
+        mask = (indx >= 0) & (indx < self.grid_size) & (indy >= 0) & (indy < self.grid_size)
+        indx, indy = indx[mask], indy[mask]
+        normals = normals[mask]
+
+        up_vector = np.array([0,0,1], dtype=np.float32)
+        similarity = np.abs(normals @ up_vector)
+        
+        for x_idx, y_idx, sim in zip(indx, indy, similarity):
+            sim = np.clip(sim, 1e-3, 1 - 1e-3)  # 0 또는 1은 log inf 에러 방지
+            logodds_obs = np.log(sim / (1 - sim))
+            self.logodds_grid[y_idx, x_idx] = 0.7 * logodds_obs + 0.3 * self.logodds_grid[y_idx, x_idx]
+
+        prob_grid = 1 - 1 / (1 + np.exp(self.logodds_grid))
+
+        cost_values = np.round((1 - prob_grid) * 100).astype(np.int8) # 0이 주행가능, 100이 주행불가능
+        self.grid = cost_values
+
+
+        og = OccupancyGrid()
+        og.header.stamp = stamp.to_msg()
+        og.header.frame_id = frame
+        og.info.resolution = self.resolution
+        og.info.width = self.grid_size
+        og.info.height = self.grid_size
+        og.info.origin.position.x = self.origin_x
+        og.info.origin.position.y = self.origin_y
+        og.info.origin.position.z = 0.0
+        og.data = self.grid.flatten(order='C').astype(int).tolist()
+        return og
+
 
 
 # ────────────────────────────────────────────────────────────────────────────────────────────────

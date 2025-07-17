@@ -177,8 +177,8 @@ class TraversabilitytoOccupancygridNode(Node):
 
         depth_m_left   = torch.tensor(depth_raw_left.astype(np.float32) / 1000.0, device=self.device) ## mm → m
         depth_m_right   = torch.tensor(depth_raw_right.astype(np.float32) / 1000.0, device=self.device) ## mm → m
-        depth_m_left[depth_m_left > 3.0] = 0.0                               ## 5 m 초과 마스킹
-        depth_m_right[depth_m_right > 3.0] = 0.0                               ## 5 m 초과 마스킹
+        depth_m_left[depth_m_left > 5.0] = 0.0                               ## 5 m 초과 마스킹
+        depth_m_right[depth_m_right > 5.0] = 0.0                               ## 5 m 초과 마스킹
                
         image_tensor_left_rgb = self.transform(pil_image_left_rgb).unsqueeze(0).to(self.device)
         image_tensor_right_rgb = self.transform(pil_image_right_rgb).unsqueeze(0).to(self.device)
@@ -210,12 +210,12 @@ class TraversabilitytoOccupancygridNode(Node):
             frame=self.odom_frame, 
             pts_with_t=points_final_cpu,
             resolution=0.1, 
-            grid_size=80, 
+            grid_size=150, 
             center_xy=(pos.x, pos.y), 
         )
 
-        pc = self.build_pc(msg_leftdepth.header.stamp, self.odom_frame, points_final_cpu[:, :3])
-        self.pub_accum.publish(pc)
+        # pc = self.build_pc(msg_leftdepth.header.stamp, self.odom_frame, points_final_cpu[:, :3])
+        # self.pub_accum.publish(pc)
         self.pub_occup.publish(og)
 
 

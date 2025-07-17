@@ -1,8 +1,6 @@
-# ROS 2 Elevation Mapping CUPY (for AGX ORIN)
+# ROS 2 costmap generated from image-based traversability  (for AGX ORIN)
 
 **Status**: 🚧 Under Development  
-<!-- ![Elevation Map in ROS 2 Humble with Gazebo ](https://github.com/user-attachments/assets/0dd9ebbe-a90d-486f-9871-81921308fab9) -->
-
 ---
 
 ## Installation
@@ -21,7 +19,7 @@ You will need to install the following:
 ### (1) Clone the Repository
 
 ```bash
-(local)$ git clone https://github.com/minho0/depth_to_elevation_map.git
+(local)$ git clone https://github.com/strapsai/front_depth_to_costmap.git
 ```
 
 
