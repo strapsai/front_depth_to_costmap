@@ -71,19 +71,24 @@ def fix_seed(seed=1):
 
 # ────────────────────── utils for inference ──────────────────────
 
-def prepare_image(image , input_size=(512, 512)):
-    
-    original_size = image.size
+def prepare_image(image_left, image_right, input_size=(512, 512)):
+    original_size_left = image_left.size
+    original_size_right = image_right.size
+        
+
     transform = transforms.Compose([
         transforms.Resize(input_size),
         transforms.ToTensor(),
         transforms.Normalize(mean=[103.939 / 255, 116.779 / 255, 123.68 / 255],
                             std=[0.229, 0.224, 0.225]),
     ])
-    tensor = transform(image).unsqueeze(0).contiguous().cuda()
-    print("[DEBUG] Input Tensor min/max:", tensor.min().item(), tensor.max().item())
+    tensor_left = transform(image_left).unsqueeze(0).contiguous().cuda()
+    tensor_right = transform(image_right).unsqueeze(0).contiguous().cuda()
 
-    return tensor, original_size
+    batched_tensor = torch.cat([tensor_left, tensor_right], dim=0).contiguous().cuda()
+
+
+    return batched_tensor, original_size_left, original_size_right
 
 def load_trt_engine(engine_path):
     with open(engine_path, "rb") as f, trt.Runtime(TRT_LOGGER) as runtime:
@@ -120,17 +125,39 @@ def allocate_trt_buffers(engine):
 
 
 def infer_trt_image(context, bindings, inputs, outputs, stream, input_tensor):
-    np.copyto(inputs[0][0], input_tensor.cpu().ravel())                             #이거왜 .cpu 붙였지?? (important)
-    cuda.memcpy_htod_async(inputs[0][1], inputs[0][0], stream)
+
+    # np.copyto(inputs[0][0], input_tensor.cpu().ravel())                             #이거왜 .cpu 붙였지?? (important)
+    # cuda.memcpy_htod_async(inputs[0][1], inputs[0][0], stream)
+    # context.execute_v2(bindings=bindings)
+    # cuda.memcpy_dtoh_async(outputs[0][0], outputs[0][1], stream)
+    # stream.synchronize()
+
+    # output = outputs[0][0]
+    # return torch.tensor(output).view(1, 1, 512, 512)  # ✅ 올바른 shape
+
+    cuda.memcpy_dtod_async(
+        dest=inputs[0][1],
+        src=input_tensor.contiguous().data_ptr(),
+        size=input_tensor.element_size() * input_tensor.numel(),
+        stream=stream
+    ) 
+    t_2 = time.perf_counter()
     context.execute_v2(bindings=bindings)
-    cuda.memcpy_dtoh_async(outputs[0][0], outputs[0][1], stream)
+    t_3 = time.perf_counter()
+
+
+    output_tensor = torch.empty((2, 1, 512, 512), dtype=torch.float32, device='cuda')  # ← 원하는 shape으로
+    cuda.memcpy_dtod_async(
+        dest=output_tensor.data_ptr(),
+        src=outputs[0][1],
+        size=output_tensor.element_size() * output_tensor.numel(),
+        stream=stream
+    )
     stream.synchronize()
     
-    output = outputs[0][0]
-    print("[DEBUG] Raw Output min/max:", np.min(output), np.max(output))
+    print(f"[Timing] real inference: {(t_3 - t_2)*1000:.2f} ms")
 
-
-    return torch.tensor(output).view(1, 1, 512, 512)  # ✅ 올바른 shape
+    return output_tensor  # ✅ 올바른 shape
 
 TRT_LOGGER = trt.Logger(trt.Logger.WARNING)
 
@@ -157,7 +184,7 @@ class TraversabilitytoOccupancygridNode(Node):
             raise # 컨텍스트 없이는 진행할 수 없으므로 에러 발생
 
         # -------------------- Parameter for inference --------------------
-        self.trt_engine_path = "/home/ros/workspace/src/front_depth_to_costmap/depth_to_pointcloud_pub/depth_to_pointcloud_pub/1_0715.plan"
+        self.trt_engine_path = "/home/ros/workspace/src/front_depth_to_costmap/depth_to_pointcloud_pub/depth_to_pointcloud_pub/1_0715_dynamic_v3.plan"
         self.engine = load_trt_engine(self.trt_engine_path)
         self.execution_context = self.engine.create_execution_context()
         self.inputs, self.outputs, self.bindings, self.stream = allocate_trt_buffers(self.engine)
@@ -244,6 +271,7 @@ class TraversabilitytoOccupancygridNode(Node):
             return 
         
         # initial fofr CPU
+
         stamp = rclpy.time.Time.from_msg(msg_leftdepth.header.stamp)
         self.get_logger().info("GPU-Accelerated Callback (PyTorch3D Version)")
 
@@ -267,8 +295,7 @@ class TraversabilitytoOccupancygridNode(Node):
         depth_m_left[depth_m_left > 5.0] = 0.0                               ## 5 m 초과 마스킹
         depth_m_right[depth_m_right > 5.0] = 0.0         
 
-        traversability_left = self.process_directory_trt(pil_image_left_rgb)
-        traversability_right = self.process_directory_trt(pil_image_right_rgb)
+        traversability_left, traversability_right = self.image_to_similarity(pil_image_left_rgb, pil_image_right_rgb)
 
         # -- GPU start -- 
         pts_left_body_gpu  = self.depth_to_pts_frame_body(depth_m_left, self.K_frontleft_depth, self.T_body_to_frontleft_depth)
@@ -298,8 +325,8 @@ class TraversabilitytoOccupancygridNode(Node):
             center_xy=(pos.x, pos.y), 
         )
 
-        pc = self.build_pc(msg_leftdepth.header.stamp, self.odom_frame, points_final_cpu[:, :3])
-        self.pub_accum.publish(pc)
+        # pc = self.build_pc(msg_leftdepth.header.stamp, self.odom_frame, points_final_cpu[:, :3])
+        # self.pub_accum.publish(pc)
         self.pub_occup.publish(og)
 
         try:
@@ -350,22 +377,31 @@ class TraversabilitytoOccupancygridNode(Node):
     #     inputs, outputs, bindings, stream = allocate_trt_buffers(engine)
 
 
-    #     result = process_directory_trt(
+    #     result = image_to_similarity(
     #     context, bindings, inputs, outputs, stream, image
     #     )      
 
     #     return result
 
-    @measure_time
-    def process_directory_trt(self, image):
+    # @measure_time
+    def image_to_similarity(self, image_left, image_right):
+        t_start = time.perf_counter()
+        input_tensor, original_size_left, original_size_right = prepare_image(image_left, image_right)
+        t_preprocess = time.perf_counter()
 
-        input_tensor, original_size = prepare_image(image)
         result = infer_trt_image(self.execution_context, self.bindings, self.inputs, self.outputs, self.stream, input_tensor)
-        print("Raw TRT result:", result.min().item(), result.max().item())
-        resized_map = F.interpolate(result, size=original_size[::-1], mode='bilinear', align_corners=False)
-        
+        t_infer = time.perf_counter()
 
-        return resized_map.to(self.device)
+        resized_map_left = F.interpolate(result[0:1, :, :, :], size=original_size_left[::-1], mode='bilinear', align_corners=False)
+        t_resize_left = time.perf_counter()
+    
+        resized_map_right = F.interpolate(result[0:1, :, :, :], size=original_size_right[::-1], mode='bilinear', align_corners=False)
+        t_resize_right = time.perf_counter()
+
+        print(f"similarity map left min/max: {resized_map_left.min().item()} / {resized_map_left.max().item()}")
+        print(f"similarity map right min/max: {resized_map_right.min().item()} / {resized_map_right.max().item()}")
+
+        return resized_map_left.to(self.device), resized_map_right.to(self.device)
 
 # ────────────────────────────────────────────────────────────────────────────────────────────────
 # ──────────────────────────────── Traversability projection 함수 ───────────────────────────
