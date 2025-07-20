@@ -30,6 +30,9 @@ import pycuda.autoinit
 import tensorrt as trt
 from PIL import Image as PILImage
 import random
+import cv2
+from scipy.ndimage import gaussian_filter
+
 
 
 def measure_time(func):
@@ -285,15 +288,49 @@ class TraversabilitytoOccupancygridNode(Node):
         cv_image_right_rgb = self.bridge.imgmsg_to_cv2(msg_rightrgb, "bgr8")
         pil_image_right_rgb = PILImage.fromarray(cv_image_right_rgb)
 
+        depth_m_left   = depth_raw_left.astype(np.float32) / 1000.0  ## mm → m
+        depth_m_right   = depth_raw_right.astype(np.float32) / 1000.0  ## mm → m
+
+        # 유효하지 않은 Depth 0으로 설정
+        depth_m_left[depth_m_left < 0.1] = 0.0      
+        depth_m_left[depth_m_left > 5.0] = 0.0                                                        
+        depth_m_right[depth_m_right < 0.1] = 0.0      
+        depth_m_right[depth_m_right > 5.0] = 0.0      
+
         pos = msg_odom.pose.pose.position
         ori = msg_odom.pose.pose.orientation
         T_odom = self.transform_to_matrix(pos, ori) 
         T_odom_gpu = torch.tensor(T_odom, dtype=torch.float32, device=self.device) 
+        # inpaint filter 적용
 
-        depth_m_left   = torch.tensor(depth_raw_left.astype(np.float32) / 1000.0, device=self.device) ## mm → m
-        depth_m_right   = torch.tensor(depth_raw_right.astype(np.float32) / 1000.0, device=self.device) ## mm → m
-        depth_m_left[depth_m_left > 5.0] = 0.0                               ## 5 m 초과 마스킹
-        depth_m_right[depth_m_right > 5.0] = 0.0         
+        # mask_left = ((depth_m_left < 0.1) | (depth_m_left > 5.0)).astype(np.uint8) * 255
+        # mask_right = ((depth_m_right < 0.1) | (depth_m_right > 5.0)).astype(np.uint8) * 255
+
+        # depth_m_left = cv2.inpaint(depth_m_left, mask_left, 7, cv2.INPAINT_TELEA)
+        # depth_m_right = cv2.inpaint(depth_m_right, mask_right, 7, cv2.INPAINT_TELEA)
+
+
+        # gaussian filter 적용
+        # depth_m_left = cv2.GaussianBlur(depth_m_left, (5,5), 0)
+        # depth_m_right = cv2.GaussianBlur(depth_m_right, (5,5), 0)
+
+        # # median filter 적용
+        # depth_m_left = cv2.medianBlur(depth_m_left, 5)
+        # depth_m_right = cv2.medianBlur(depth_m_right, 5)
+
+        depth_m_left = torch.tensor(depth_m_left, device=self.device)
+        depth_m_right = torch.tensor(depth_m_right, device=self.device)
+
+        ####### image debuging#######
+        # depth_np_left = depth_m_left.detach().cpu().numpy()
+        # depth_np_right = depth_m_right.detach().cpu().numpy()
+
+        # img_msg_left = self.bridge.cv2_to_imgmsg(depth_np_left, encoding='32FC1')
+        # img_msg_right = self.bridge.cv2_to_imgmsg(depth_np_right, encoding='32FC1')
+        # self.pub_image_left.publish(img_msg_left)
+        # self.pub_image_right.publish(img_msg_right)
+        ####### image debuging#######
+
 
         traversability_left, traversability_right = self.image_to_similarity(pil_image_left_rgb, pil_image_right_rgb)
 
@@ -335,6 +372,42 @@ class TraversabilitytoOccupancygridNode(Node):
         except Exception as e:
             self.get_logger().error(f"Failed to pop PyCUDA Context in callback: {e}")
 
+
+
+# ────────────────────────────────────────────────────────────────────────────────────────────────
+# ──────────────────────────────── Filtering ──────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────────────────────────
+        
+    @measure_time
+    def depth_hole_filling_with_grabcut(depth):
+        """
+        depth: np.float32, hole=0, 단위 m
+        return: hole이 채워진 depth map
+        """
+        mask = np.where(depth == 0, 0, 1).astype('uint8')  # 0이면 배경, 아니면 전경
+
+        grabcut_mask = np.where(mask==1, 3, 0).astype('uint8')
+
+        # 3. 임의의 rect (전체 이미지 영역)
+        h, w = depth.shape
+        rect = (1, 1, w-2, h-2)
+
+        # 4. bgdModel, fgdModel 초기화 (필요한 크기)
+        bgdModel = np.zeros((1,65), np.float64)
+        fgdModel = np.zeros((1,65), np.float64)
+
+        # 5. grabCut 실행
+        cv2.grabCut(depth.astype('uint8'), grabcut_mask, rect, bgdModel, fgdModel, 5, cv2.GC_INIT_WITH_MASK)
+
+        # 6. 최종 마스크 얻기 (0,2는 배경, 1,3은 전경)
+        final_mask = np.where((grabcut_mask==2)|(grabcut_mask==0), 0, 1).astype('uint8')
+
+        # 7. hole(배경) 부분을 전경의 평균값으로 채우기 (간단 보간)
+        mean_depth = depth[final_mask == 1].mean()
+        filled_depth = depth.copy()
+        filled_depth[final_mask == 0] = mean_depth
+
+        return filled_depth
 
 
 # ────────────────────────────────────────────────────────────────────────────────────────────────
@@ -518,6 +591,21 @@ class TraversabilitytoOccupancygridNode(Node):
         np.minimum.at(grid, flat_indices, traversability_value)
         grid[grid == 101] = -1
         grid = grid.reshape((grid_size, grid_size)).astype(np.int8)
+
+        # Filtering
+        # mask = (grid == -1).astype(np.uint8) 
+            
+        # grid_for_inpaint = grid.copy()
+        # grid_for_inpaint[mask == 1] = 0
+        # grid_for_inpaint = ((grid_for_inpaint + 1) * 2).clip(0, 255).astype(np.uint8)
+
+        # inpainted = cv2.inpaint(grid_for_inpaint, mask, inpaintRadius=3, flags=cv2.INPAINT_TELEA)
+        # result = (inpainted.astype(np.float32) / 2) - 1
+        # result = result.astype(np.int8)
+        # grid = result
+        # Filtering
+
+
 
         og = OccupancyGrid()
         og.header.stamp = stamp.to_msg()

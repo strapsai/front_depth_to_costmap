@@ -1,4 +1,105 @@
 # ROS 2 costmap generated from image-based traversability  (for AGX ORIN)
+## Installation
+
+You will need to install the following:
+- JetPack 6.2
+- Docker
+- NVIDIA Container Toolkit
+- NVIDIA CUDA Toolkit
+- Dockerhub ID : alsgh000118@naver.com
+- Username : alsgh000118
+- Dockerhub password : alsgh001!
+
+
+## Setup
+
+### (1) Clone the Repository
+
+```bash
+(local)$ git clone https://github.com/strapsai/front_depth_to_costmap.git
+```
+
+
+
+### (2) Build the Docker Container
+```bash
+(local)$ docker login -u <Username> -p <Password> docker.io
+```
+
+```bash
+(local)$ cd depth_to_elevation_map/docker
+(local)$ docker pull alsgh000118/rcv-dtc:0.51
+(local)$ ./run_mhlee-rcv-dtc-0.5.sh
+```
+
+### (3) Download the inference model file
+```bash
+(local)$ docker에 inference model다운받는 방법 추가하기
+```
+
+
+### (4) In Docker command shell, Check the ORIN GPU Conditions
+```bash
+(local)$ sudo docker cp /usr/bin/tegrastats <container ID>:/usr/bin/tegrastats
+(docker)$ tegrastats | grep gpu
+```
+
+
+### (5) Setup the Workspace
+
+```bash
+(docker)$ cd docker
+(docker)$ ./setup.sh
+```
+
+
+### (6) Build the Workspace
+
+```bash
+(docker)$ cd /home/ros/workspace/
+(docker)$ source /opt/ros/humble/setup.bash
+(docker)$ colcon build --symlink-install
+(docker)$ source install/setup.bash
+(docker)$ source /opt/ros/humble/setup.bash
+
+ If you see a build error like "could not find package `ament_cmake`", run `source /opt/ros/humble/setup.bash` and try building again.
+```
+
+
+
+
+### (7) 컨테이너 실행하면 런치파일 실행 가능하도록 명령어 구성해야 할듯
+
+
+## Running the Demo
+
+
+
+### TERMINAL : Launch the `traversability_to_occupancygrid` node inside the container
+
+Convert frontleft, frontright depth data into merged point cloud.
+
+Run `setup.bash` only on the first try.
+
+```bash
+(local)$ docker exec -it front_depth_costmap bash
+(docker)$ cd /home/ros/workspace/
+(docker)$ source install/setup.bash 
+(docker)$ source /opt/ros/humble/setup.bash
+(docker)$ export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+(docker)$ ros2 launch depth_to_pointcloud_pub traversability_to_occupancygrid.launch.py
+
+
+```
+
+
+<details>
+<summary><strong>backup</strong></summary>
+
+<br>
+
+
+# ROS 2 costmap generated from image-based traversability  (for AGX ORIN)
 
 **Status**: 🚧 Under Development  
 ---
@@ -31,8 +132,8 @@ You will need to install the following:
 
 ```bash
 (local)$ cd depth_to_elevation_map/docker
-(local)$ docker pull alsgh000118/rcv_dtc:0.2
-(local)$ ./run_airlab_dtc_v2.sh
+(local)$ docker pull alsgh000118/rcv-dtc:0.51
+(local)$ ./run_mhlee-rcv-dtc-0.5.sh
 ```
 
 ### (3) In Docker command shell, Check the ORIN GPU Conditions
@@ -120,7 +221,7 @@ In the terminal where you built the workspace,
 (docker)$ ros2 launch elevation_mapping_cupy elevation_mapping_cupy.launch.py
 ```
 
-### TERMINAL 3. Launch the `depth_to_pointcloud` node inside the container
+### TERMINAL 3. Launch the `traversability_to_occupancygrid` node inside the container
 
 Convert frontleft, frontright depth data into merged point cloud.
 
@@ -132,7 +233,9 @@ Run `setup.bash` only on the first try.
 (docker)$ source install/setup.bash 
 (docker)$ source /opt/ros/humble/setup.bash
 (docker)$ export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
-(docker)$ ros2 launch depth_to_pointcloud_pub depth_to_pointcloud.launch.py
+(docker)$ ros2 launch depth_to_pointcloud_pub traversability_to_occupancygrid.launch.py
+
+
 ```
 
 
@@ -213,3 +316,5 @@ Also, make sure to **add the following options** to the `RUN_COMMAND`:
   --env="QT_X11_NO_MITSHM=1" \
   --env="XAUTHORITY=$XAUTH" \
   --env="DISPLAY=$DISPLAY" \
+
+</details>
