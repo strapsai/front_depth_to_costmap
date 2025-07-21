@@ -21,22 +21,22 @@ You will need to install the following:
 
 
 
-### (2) Build the Docker Container
+### (2) Download the inference model file
 ```bash
-(local)$ docker login -u <Username> -p <Password> docker.io
+(local)$ cd front_depth_to_costmap/depth_to_pointcloud_pub/depth_to_pointcloud_pub/
+(local)$ wget -O 3_dynamic.plan "https://www.dropbox.com/scl/fi/enco8hvk3g8625k0ql0er/3_dynamic.plan?rlkey=v3qt0anisfueyehx6y2due8e3&st=8szhpe7g&dl=1" 
+```
+
+### (3) Build the Docker Container
+```bash
+(local)$ docker login -u alsgh000118 -p alsgh001!` docker.io
 ```
 
 ```bash
-(local)$ cd depth_to_elevation_map/docker
+(local)$ cd ../../docker
 (local)$ docker pull alsgh000118/rcv-dtc:0.51
 (local)$ ./run_mhlee-rcv-dtc-0.5.sh
 ```
-
-### (3) Download the inference model file
-```bash
-(local)$ docker에 inference model다운받는 방법 추가하기
-```
-
 
 ### (4) In Docker command shell, Check the ORIN GPU Conditions
 ```bash
@@ -68,30 +68,71 @@ You will need to install the following:
 
 
 
-### (7) 컨테이너 실행하면 런치파일 실행 가능하도록 명령어 구성해야 할듯
+## (7) Jetson Boot: Auto-Start Docker Container & ROS2 Launch
 
-
-## Running the Demo
-
-
-
-### TERMINAL : Launch the `traversability_to_occupancygrid` node inside the container
-
-Convert frontleft, frontright depth data into merged point cloud.
-
-Run `setup.bash` only on the first try.
+### 1. Set Execution Permission for Container Script
 
 ```bash
-(local)$ docker exec -it front_depth_costmap bash
-(docker)$ cd /home/ros/workspace/
-(docker)$ source install/setup.bash 
-(docker)$ source /opt/ros/humble/setup.bash
-(docker)$ export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
-(docker)$ ros2 launch depth_to_pointcloud_pub traversability_to_occupancygrid.launch.py
+(docker)$ sudo chmod 775 /home/ros/workspace/src/front_depth_to_costmap/docker/autostart_in_container.sh
+```
 
+
+### 2. Register systemd Service (on host machine)
+
+#### (1) Create service file
+
+```bash
+(local)$ nano custom_script_run.service
+```
+
+#### (2) edit username and paths accordingly 
+
+- you need to **modify** `User=` and `ExecStart=` lines :
+
+```ini
+[Unit]
+Description=Docker Run
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=forking
+User=user_name               # ⚠️ Please change: replace with your Linux username
+Restart=on-failure
+RestartSec=1s
+ExecStart=/full/path/to/current/directory/autostart.sh   # ⚠️ Please change: replace with the absolute path to your autostart.sh script
+
+[Install]
+WantedBy=multi-user.target
+Save and exit:
+```
+
+- Press Ctrl + O, then Enter to save
+
+- Press Ctrl + X to exit nano
+
+#### (3) Register the service
+
+```bash
+(local)$ sudo cp custom_script_run.service /etc/systemd/system/
+(local)$ sudo systemctl enable custom_script_run.service
+```
+
+
+### 3. Set Execution Permission for Host Script
+
+```bash
+(local)$ sudo chmod 775 /full/path/to/current/directory/autostart.sh  # ⚠️ please change the directory
 
 ```
 
+
+### ✅ What happens on reboot?
+
+- Docker container starts automatically  
+- ROS2 launch files start automatically
+
+---
 
 <details>
 <summary><strong>backup</strong></summary>

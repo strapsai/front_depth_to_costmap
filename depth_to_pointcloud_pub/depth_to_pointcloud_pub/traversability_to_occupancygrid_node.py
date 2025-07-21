@@ -187,7 +187,7 @@ class TraversabilitytoOccupancygridNode(Node):
             raise # 컨텍스트 없이는 진행할 수 없으므로 에러 발생
 
         # -------------------- Parameter for inference --------------------
-        self.trt_engine_path = "/home/ros/workspace/src/front_depth_to_costmap/depth_to_pointcloud_pub/depth_to_pointcloud_pub/1_0715_dynamic_v3.plan"
+        self.trt_engine_path = "/home/ros/workspace/src/front_depth_to_costmap/depth_to_pointcloud_pub/depth_to_pointcloud_pub/3_dynamic.plan"
         self.engine = load_trt_engine(self.trt_engine_path)
         self.execution_context = self.engine.create_execution_context()
         self.inputs, self.outputs, self.bindings, self.stream = allocate_trt_buffers(self.engine)
@@ -372,12 +372,10 @@ class TraversabilitytoOccupancygridNode(Node):
         except Exception as e:
             self.get_logger().error(f"Failed to pop PyCUDA Context in callback: {e}")
 
-
-
 # ────────────────────────────────────────────────────────────────────────────────────────────────
 # ──────────────────────────────── Filtering ──────────────────────────────────────────
 # ────────────────────────────────────────────────────────────────────────────────────────────────
-        
+
     @measure_time
     def depth_hole_filling_with_grabcut(depth):
         """
@@ -468,9 +466,21 @@ class TraversabilitytoOccupancygridNode(Node):
         resized_map_left = F.interpolate(result[0:1, :, :, :], size=original_size_left[::-1], mode='bilinear', align_corners=False)
         t_resize_left = time.perf_counter()
     
-        resized_map_right = F.interpolate(result[0:1, :, :, :], size=original_size_right[::-1], mode='bilinear', align_corners=False)
+        resized_map_right = F.interpolate(result[1:2, :, :, :], size=original_size_right[::-1], mode='bilinear', align_corners=False)
         t_resize_right = time.perf_counter()
 
+
+        # GPU 텐서를 CPU NumPy 배열로 변환
+        similarity_np_left = resized_map_left.squeeze().cpu().numpy()
+        similarity_np_right = resized_map_right.squeeze().cpu().numpy()
+
+        # Image 메시지로 변환 및 발행
+        img_msg_left = self.bridge.cv2_to_imgmsg(similarity_np_left, encoding='32FC1')
+        self.pub_image_left.publish(img_msg_left)
+        img_msg_right = self.bridge.cv2_to_imgmsg(similarity_np_right, encoding='32FC1')
+        self.pub_image_right.publish(img_msg_right)
+    
+    
         print(f"similarity map left min/max: {resized_map_left.min().item()} / {resized_map_left.max().item()}")
         print(f"similarity map right min/max: {resized_map_right.min().item()} / {resized_map_right.max().item()}")
 
@@ -604,8 +614,6 @@ class TraversabilitytoOccupancygridNode(Node):
         # result = result.astype(np.int8)
         # grid = result
         # Filtering
-
-
 
         og = OccupancyGrid()
         og.header.stamp = stamp.to_msg()
