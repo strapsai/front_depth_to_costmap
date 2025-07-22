@@ -82,6 +82,7 @@ You will need to install the following:
 #### (1) Create service file
 
 ```bash
+(docker)$ exit
 (local)$ nano custom_script_run.service
 ```
 
