@@ -88,6 +88,7 @@ You will need to install the following:
 
 #### (2) edit username and paths accordingly 
 
+- copy this to custom_script_run.service
 - you need to **modify** `User=` and `ExecStart=` lines :
 
 ```ini
