@@ -106,9 +106,8 @@ ExecStart=/full/path/to/current/directory/autostart.sh   # ⚠️ Please change:
 
 [Install]
 WantedBy=multi-user.target
-Save and exit:
 ```
-
+Save and exit:
 - Press Ctrl + O, then Enter to save
 
 - Press Ctrl + X to exit nano
