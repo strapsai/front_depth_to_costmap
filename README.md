@@ -29,7 +29,7 @@ You will need to install the following:
 
 ### (3) Build the Docker Container
 ```bash
-(local)$ docker login -u alsgh000118 -p alsgh001!` docker.io
+(local)$ docker login -u alsgh000118 -p alsgh001! docker.io
 ```
 
 ```bash
