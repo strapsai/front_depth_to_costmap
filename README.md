@@ -40,7 +40,7 @@ You will need to install the following:
 
 ### (4) In Docker command shell, Check the ORIN GPU Conditions
 ```bash
-(local)$ sudo docker cp /usr/bin/tegrastats <container ID>:/usr/bin/tegrastats
+(local)$ sudo docker cp /usr/bin/tegrastats front_traversability:/usr/bin/tegrastats
 (docker)$ tegrastats | grep gpu
 ```
 
