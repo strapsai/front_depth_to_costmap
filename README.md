@@ -29,7 +29,7 @@ You will need to install the following:
 
 ### (3) Build the Docker Container
 ```bash
-(local)$ docker login -u alsgh000118 -p alsgh001! docker.io
+(local)$ docker login -u alsgh000118 -p alsgh001!` docker.io
 ```
 
 ```bash
@@ -40,7 +40,7 @@ You will need to install the following:
 
 ### (4) In Docker command shell, Check the ORIN GPU Conditions
 ```bash
-(local)$ sudo docker cp /usr/bin/tegrastats front_traversability:/usr/bin/tegrastats
+(local)$ sudo docker cp /usr/bin/tegrastats <container ID>:/usr/bin/tegrastats
 (docker)$ tegrastats | grep gpu
 ```
 
@@ -82,13 +82,11 @@ You will need to install the following:
 #### (1) Create service file
 
 ```bash
-(docker)$ exit
 (local)$ nano custom_script_run.service
 ```
 
 #### (2) edit username and paths accordingly 
 
-- copy this to custom_script_run.service
 - you need to **modify** `User=` and `ExecStart=` lines :
 
 ```ini
@@ -106,8 +104,9 @@ ExecStart=/full/path/to/current/directory/autostart.sh   # ⚠️ Please change:
 
 [Install]
 WantedBy=multi-user.target
-```
 Save and exit:
+```
+
 - Press Ctrl + O, then Enter to save
 
 - Press Ctrl + X to exit nano

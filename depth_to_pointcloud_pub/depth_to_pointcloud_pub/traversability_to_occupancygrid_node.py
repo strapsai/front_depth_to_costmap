@@ -5,8 +5,7 @@ ROS 2 node: Traversability → Occupancygrid (body frame)
 
 import os, struct, yaml
 from typing import Dict, Optional
-import rclpy
-import numpy as np
+import rclpy, numpy as np
 from rclpy.node import Node
 from sensor_msgs.msg import Image, CameraInfo, PointCloud2, PointField
 from ament_index_python.packages import get_package_share_directory
@@ -33,9 +32,7 @@ from PIL import Image as PILImage
 import random
 import cv2
 from scipy.ndimage import gaussian_filter
-from geometry_msgs.msg import PointStamped # RViz 시각화를 위한 PointStamped (header 있음)
-from std_msgs.msg import Header # PointStamped의 header를 채우기 위해 필요
-from rclpy.executors import MultiThreadedExecutor # MultiThreadedExecutor 임포트
+
 
 
 def measure_time(func):
@@ -45,7 +42,7 @@ def measure_time(func):
         result = func(*args, **kwargs)
         end = time.time()
         elapse_time = (end - start) * 1000
-        # print(f"[{func.__name__}] Elapsed time: {elapse_time:.4f} msec")
+        print(f"[{func.__name__}] Elapsed time: {elapse_time:.4f} msec")
         return result
     return wrapper
     
@@ -70,6 +67,11 @@ def fix_seed(seed=1):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
+
+
+
+
+
 # ────────────────────── utils for inference ──────────────────────
 
 def prepare_image(image_left, image_right, input_size=(512, 512)):
@@ -87,6 +89,7 @@ def prepare_image(image_left, image_right, input_size=(512, 512)):
     tensor_right = transform(image_right).unsqueeze(0).contiguous().cuda()
 
     batched_tensor = torch.cat([tensor_left, tensor_right], dim=0).contiguous().cuda()
+
 
     return batched_tensor, original_size_left, original_size_right
 
@@ -155,7 +158,7 @@ def infer_trt_image(context, bindings, inputs, outputs, stream, input_tensor):
     )
     stream.synchronize()
     
-    # print(f"[Timing] real inference: {(t_3 - t_2)*1000:.2f} ms")
+    print(f"[Timing] real inference: {(t_3 - t_2)*1000:.2f} ms")
 
     return output_tensor  # ✅ 올바른 shape
 
@@ -237,7 +240,7 @@ class TraversabilitytoOccupancygridNode(Node):
         self.pub_normal = self.create_publisher(Marker, "/spot1/base/spot/depth/normal_front", 10) #mhlee 25.06.23
         self.pub_image_left = self.create_publisher(Image, "/spot1/base/spot/camera/similarity_left", 10)
         self.pub_image_right = self.create_publisher(Image, "/spot1/base/spot/camera/similarity_right", 10)
-        self.pub_robot_center_point = self.create_publisher(PointStamped, '/robot/center_point_for_rviz', 10)
+
 
         # -------------------- Subscriber & Syncronizer  --------------------    
         # Subscriber for main Data
@@ -249,42 +252,16 @@ class TraversabilitytoOccupancygridNode(Node):
 
         self.sync = ApproximateTimeSynchronizer(
             [self.sub_leftdepth, self.sub_rightdepth, self.sub_leftrgb, self.sub_rightrgb, self.sub_odom], # iwshim. 25.05.30
-            queue_size=10,                    
-            slop=0.5)
+            queue_size=30,                    
+            slop=1.0)
         self.sync.registerCallback(self.occupancy_cb) # mhlee 25.06.19
 
-        
-    #     # 주기 기반 동기화 
-    #     self.latest_msgs = {}
-    #     self.sub_leftdepth.registerCallback(lambda msg: self.store_msg('left_depth', msg))
-    #     self.sub_rightdepth.registerCallback(lambda msg: self.store_msg('right_depth', msg))
-    #     self.sub_leftrgb.registerCallback(lambda msg: self.store_msg('left_rgb', msg))
-    #     self.sub_rightrgb.registerCallback(lambda msg: self.store_msg('right_rgb', msg))
-    #     self.sub_odom.registerCallback(lambda msg: self.store_msg('odom', msg))
 
-    #     self.sync_timer = self.create_timer(1.0 / 14.0, self.sync_callback)  
-
-
-    # def store_msg(self, key, msg):
-    #     self.latest_msgs[key] = msg
-
-    # def sync_callback(self):
-    #     if len(self.latest_msgs) == 5:
-    #         self.occupancy_cb(
-    #             self.latest_msgs['left_depth'],
-    #             self.latest_msgs['right_depth'],
-    #             self.latest_msgs['left_rgb'],
-    #             self.latest_msgs['right_rgb'],
-    #             self.latest_msgs['odom']
-    #         )
-    
 
 # ────────────────────────────────────────────────────────────────────────────────────────────────
 # ──────────────────────────────── callback 함수 ──────────────────────────────────────────
 # ────────────────────────────────────────────────────────────────────────────────────────────────
     # ───────────── occupancy callback ─────────────  # mhlee 25.06.19
-
-    
 
     def occupancy_cb(self, msg_leftdepth : Image, msg_rightdepth : Image, msg_leftrgb : Image, msg_rightrgb : Image, msg_odom : Odometry): 
         try:
@@ -296,47 +273,34 @@ class TraversabilitytoOccupancygridNode(Node):
             # 컨텍스트 활성화 실패 시, GPU 작업은 불가능하므로 여기서 리턴하거나 예외 처리
             return 
         
-
-        self.get_logger().info(f"Left Depth stamp: {msg_leftdepth.header.stamp.sec}.{msg_leftdepth.header.stamp.nanosec}")
-        self.get_logger().info(f"Right Depth stamp: {msg_rightdepth.header.stamp.sec}.{msg_rightdepth.header.stamp.nanosec}")
-        self.get_logger().info(f"Left RGB stamp: {msg_leftrgb.header.stamp.sec}.{msg_leftrgb.header.stamp.nanosec}")
-        self.get_logger().info(f"Right RGB stamp: {msg_rightrgb.header.stamp.sec}.{msg_rightrgb.header.stamp.nanosec}")
-        self.get_logger().info(f"Odom stamp: {msg_odom.header.stamp.sec}.{msg_odom.header.stamp.nanosec}")
-        # print(f"{msg_odom.header.stamp.sec}.{msg_odom.header.stamp.nanosec}")
-        # print(f"{msg_rightrgb.header.stamp.sec}.{msg_rightrgb.header.stamp.nanosec}")
-
         # initial fofr CPU
 
-        stamp = rclpy.time.Time.from_msg(msg_odom.header.stamp)
-        # self.get_logger().info("GPU-Accelerated Callback (PyTorch3D Version)")
+        stamp = rclpy.time.Time.from_msg(msg_leftdepth.header.stamp)
+        self.get_logger().info("GPU-Accelerated Callback (PyTorch3D Version)")
 
                 
         depth_raw_left = self.bridge.imgmsg_to_cv2(msg_leftdepth, "passthrough")  ## 16UC1 → np.ndarray
         depth_raw_right = self.bridge.imgmsg_to_cv2(msg_rightdepth, "passthrough")  ## 16UC1 → np.ndarray
 
         cv_image_left_rgb = self.bridge.imgmsg_to_cv2(msg_leftrgb, "bgr8")
-        pil_image_left_rgb = PILImage.fromarray(cv2.cvtColor(cv_image_left_rgb, cv2.COLOR_BGR2RGB))
-        # pil_image_left_rgb = PILImage.fromarray(cv_image_left_rgb)
+        pil_image_left_rgb = PILImage.fromarray(cv_image_left_rgb)
 
         cv_image_right_rgb = self.bridge.imgmsg_to_cv2(msg_rightrgb, "bgr8")
-        pil_image_right_rgb = PILImage.fromarray(cv2.cvtColor(cv_image_right_rgb, cv2.COLOR_BGR2RGB))
-        # pil_image_right_rgb = PILImage.fromarray(cv_image_right_rgb)
+        pil_image_right_rgb = PILImage.fromarray(cv_image_right_rgb)
 
         depth_m_left   = depth_raw_left.astype(np.float32) / 1000.0  ## mm → m
         depth_m_right   = depth_raw_right.astype(np.float32) / 1000.0  ## mm → m
 
         # 유효하지 않은 Depth 0으로 설정
-        depth_m_left[depth_m_left <  0.1] = 0.0      
-        depth_m_left[depth_m_left > 3.0] = 0.0                                                        
+        depth_m_left[depth_m_left < 0.1] = 0.0      
+        depth_m_left[depth_m_left > 5.0] = 0.0                                                        
         depth_m_right[depth_m_right < 0.1] = 0.0      
-        depth_m_right[depth_m_right > 3.0] = 0.0      
+        depth_m_right[depth_m_right > 5.0] = 0.0      
 
         pos = msg_odom.pose.pose.position
         ori = msg_odom.pose.pose.orientation
         T_odom = self.transform_to_matrix(pos, ori) 
         T_odom_gpu = torch.tensor(T_odom, dtype=torch.float32, device=self.device) 
-        # self.get_logger().info(f"Odom pose: position=({pos.x:.2f}, {pos.y:.2f}, {pos.z:.2f}), orientation=({ori.x:.2f}, {ori.y:.2f}, {ori.z:.2f}, {ori.w:.2f})")
-
         # inpaint filter 적용
 
         # mask_left = ((depth_m_left < 0.1) | (depth_m_left > 5.0)).astype(np.uint8) * 255
@@ -347,8 +311,8 @@ class TraversabilitytoOccupancygridNode(Node):
 
 
         # gaussian filter 적용
-        depth_m_left = cv2.GaussianBlur(depth_m_left, (5,5), 0)
-        depth_m_right = cv2.GaussianBlur(depth_m_right, (5,5), 0)
+        # depth_m_left = cv2.GaussianBlur(depth_m_left, (5,5), 0)
+        # depth_m_right = cv2.GaussianBlur(depth_m_right, (5,5), 0)
 
         # # median filter 적용
         # depth_m_left = cv2.medianBlur(depth_m_left, 5)
@@ -356,8 +320,6 @@ class TraversabilitytoOccupancygridNode(Node):
 
         depth_m_left = torch.tensor(depth_m_left, device=self.device)
         depth_m_right = torch.tensor(depth_m_right, device=self.device)
-
-
 
         ####### image debuging#######
         # depth_np_left = depth_m_left.detach().cpu().numpy()
@@ -388,7 +350,6 @@ class TraversabilitytoOccupancygridNode(Node):
 
         points_world = (T_odom_gpu @ points_homo.T).T[:, :3] 
         points_final = torch.cat([points_world, pts_with_traversability_downsampled[:, 3:4]], dim=1) 
-        
         # -- GPU end -- 
 
         points_final_cpu = points_final.cpu().numpy()
@@ -399,29 +360,7 @@ class TraversabilitytoOccupancygridNode(Node):
             resolution=0.1, 
             grid_size=150, 
             center_xy=(pos.x, pos.y), 
-            )
-
-         # 로봇의 현재 위치 (pos.x, pos.y)를 PointStamped 메시지로 발행
-        # current_robot_point_msg = PointStamped()
-        # current_robot_point_msg.header.stamp = stamp.to_msg() # 깊이 이미지와 동일한 타임스탬프 사용
-        # current_robot_point_msg.header.frame_id = self.odom_frame # OccupancyGrid와 동일한 프레임 사용
-        # current_robot_point_msg.point.x = pos.x
-        # current_robot_point_msg.point.y = pos.y
-        # current_robot_point_msg.point.z = -2.0 # z 값도 포함 (바닥에 점이 찍히도록)
-        # self.pub_robot_center_point.publish(current_robot_point_msg)
-        # self.get_logger().debug(f"Published robot center point: ({pos.x}, {pos.y}, {pos.z}) in {self.odom_frame} frame.")
-
-
-        # points_final_cpu = pts_with_traversability_downsampled.cpu().numpy()
-
-        # og = self.pointcloud_with_traversability_to_occupancy_grid(stamp=stamp, 
-        # frame=self.body_frame, 
-        # pts_with_t=points_final_cpu,
-        # resolution=0.1, 
-        # grid_size=150, 
-        # center_xy=(0.0,0.0), 
-        # )
-
+        )
 
         # pc = self.build_pc(msg_leftdepth.header.stamp, self.odom_frame, points_final_cpu[:, :3])
         # self.pub_accum.publish(pc)
@@ -437,36 +376,36 @@ class TraversabilitytoOccupancygridNode(Node):
 # ──────────────────────────────── Filtering ──────────────────────────────────────────
 # ────────────────────────────────────────────────────────────────────────────────────────────────
 
-    # @measure_time
-    # def depth_hole_filling_with_grabcut(depth):
-    #     """
-    #     depth: np.float32, hole=0, 단위 m
-    #     return: hole이 채워진 depth map
-    #     """
-    #     mask = np.where(depth == 0, 0, 1).astype('uint8')  # 0이면 배경, 아니면 전경
+    @measure_time
+    def depth_hole_filling_with_grabcut(depth):
+        """
+        depth: np.float32, hole=0, 단위 m
+        return: hole이 채워진 depth map
+        """
+        mask = np.where(depth == 0, 0, 1).astype('uint8')  # 0이면 배경, 아니면 전경
 
-    #     grabcut_mask = np.where(mask==1, 3, 0).astype('uint8')
+        grabcut_mask = np.where(mask==1, 3, 0).astype('uint8')
 
-    #     # 3. 임의의 rect (전체 이미지 영역)
-    #     h, w = depth.shape
-    #     rect = (1, 1, w-2, h-2)
+        # 3. 임의의 rect (전체 이미지 영역)
+        h, w = depth.shape
+        rect = (1, 1, w-2, h-2)
 
-    #     # 4. bgdModel, fgdModel 초기화 (필요한 크기)
-    #     bgdModel = np.zeros((1,65), np.float64)
-    #     fgdModel = np.zeros((1,65), np.float64)
+        # 4. bgdModel, fgdModel 초기화 (필요한 크기)
+        bgdModel = np.zeros((1,65), np.float64)
+        fgdModel = np.zeros((1,65), np.float64)
 
-    #     # 5. grabCut 실행
-    #     cv2.grabCut(depth.astype('uint8'), grabcut_mask, rect, bgdModel, fgdModel, 5, cv2.GC_INIT_WITH_MASK)
+        # 5. grabCut 실행
+        cv2.grabCut(depth.astype('uint8'), grabcut_mask, rect, bgdModel, fgdModel, 5, cv2.GC_INIT_WITH_MASK)
 
-    #     # 6. 최종 마스크 얻기 (0,2는 배경, 1,3은 전경)
-    #     final_mask = np.where((grabcut_mask==2)|(grabcut_mask==0), 0, 1).astype('uint8')
+        # 6. 최종 마스크 얻기 (0,2는 배경, 1,3은 전경)
+        final_mask = np.where((grabcut_mask==2)|(grabcut_mask==0), 0, 1).astype('uint8')
 
-    #     # 7. hole(배경) 부분을 전경의 평균값으로 채우기 (간단 보간)
-    #     mean_depth = depth[final_mask == 1].mean()
-    #     filled_depth = depth.copy()
-    #     filled_depth[final_mask == 0] = mean_depth
+        # 7. hole(배경) 부분을 전경의 평균값으로 채우기 (간단 보간)
+        mean_depth = depth[final_mask == 1].mean()
+        filled_depth = depth.copy()
+        filled_depth[final_mask == 0] = mean_depth
 
-    #     return filled_depth
+        return filled_depth
 
 
 # ────────────────────────────────────────────────────────────────────────────────────────────────
@@ -498,42 +437,52 @@ class TraversabilitytoOccupancygridNode(Node):
 # ────────────────────────────────────────────────────────────────────────────────────────────────
 # ──────────────────────────────── Traversability 함수 ──────────────────────────────────────────
 # ────────────────────────────────────────────────────────────────────────────────────────────────
+        
+    # @measure_time
+    # def traversability(self, image):
+    
+    #     engine_path = '/home/ros/workspace/src/front_depth_to_costmap/depth_to_pointcloud_pub/depth_to_pointcloud_pub/models/1_0715.pth'
+
+    #     engine = load_trt_engine(engine_path)
+    #     context = engine.create_execution_context()
+    #     inputs, outputs, bindings, stream = allocate_trt_buffers(engine)
+
+
+    #     result = image_to_similarity(
+    #     context, bindings, inputs, outputs, stream, image
+    #     )      
+
+    #     return result
 
     # @measure_time
     def image_to_similarity(self, image_left, image_right):
-
         t_start = time.perf_counter()
         input_tensor, original_size_left, original_size_right = prepare_image(image_left, image_right)
         t_preprocess = time.perf_counter()
 
-        result = infer_trt_image(
-            self.execution_context, self.bindings, self.inputs,
-            self.outputs, self.stream, input_tensor
-        )
+        result = infer_trt_image(self.execution_context, self.bindings, self.inputs, self.outputs, self.stream, input_tensor)
         t_infer = time.perf_counter()
 
-
-        resized_map_left= F.interpolate(result[0:1, :, :, :], size=original_size_left[::-1], mode='bilinear', align_corners=False)
+        resized_map_left = F.interpolate(result[0:1, :, :, :], size=original_size_left[::-1], mode='bilinear', align_corners=False)
         t_resize_left = time.perf_counter()
     
-        resized_map_right = F.interpolate(result[1:2, :, :, :], size=original_size_right[::-1], mode='bilinear', align_corners=False)        
+        resized_map_right = F.interpolate(result[1:2, :, :, :], size=original_size_right[::-1], mode='bilinear', align_corners=False)
         t_resize_right = time.perf_counter()
 
-        resized_map_left = (resized_map_left + 1.0) / 2.0
-        resized_map_right = (resized_map_right + 1.0) / 2.0
 
         # GPU 텐서를 CPU NumPy 배열로 변환
-        # similarity_np_left = resized_map_left.squeeze().cpu().numpy()
-        # similarity_np_right = resized_map_right.squeeze().cpu().numpy()
+        similarity_np_left = resized_map_left.squeeze().cpu().numpy()
+        similarity_np_right = resized_map_right.squeeze().cpu().numpy()
 
-        # # Image 메시지로 변환 및 발행
-        # img_msg_left = self.bridge.cv2_to_imgmsg(similarity_np_left, encoding='32FC1')
-        # self.pub_image_left.publish(img_msg_left)
-        # img_msg_right = self.bridge.cv2_to_imgmsg(similarity_np_right, encoding='32FC1')
-        # self.pub_image_right.publish(img_msg_right)
+        # Image 메시지로 변환 및 발행
+        img_msg_left = self.bridge.cv2_to_imgmsg(similarity_np_left, encoding='32FC1')
+        self.pub_image_left.publish(img_msg_left)
+        img_msg_right = self.bridge.cv2_to_imgmsg(similarity_np_right, encoding='32FC1')
+        self.pub_image_right.publish(img_msg_right)
     
-        # print(f"similarity map left min/max: {resized_map_left.min().item()} / {resized_map_left.max().item()}")
-        # print(f"similarity map right min/max: {resized_map_right.min().item()} / {resized_map_right.max().item()}")
+    
+        print(f"similarity map left min/max: {resized_map_left.min().item()} / {resized_map_left.max().item()}")
+        print(f"similarity map right min/max: {resized_map_right.min().item()} / {resized_map_right.max().item()}")
 
         return resized_map_left.to(self.device), resized_map_right.to(self.device)
 
@@ -736,8 +685,7 @@ def main(argv=None):
     node.destroy_node()                  ## 종료 시 정리
     rclpy.shutdown()                     ## rclpy 종료
 
-
-
 if __name__ == "__main__":
     main()                               ## python filename.py 실행 시 main 호출
+
 
