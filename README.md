@@ -28,9 +28,14 @@ If you're working without GUI , run this :
 git clone https://github.com/strapsai/front_depth_to_costmap.git
 ```
 
+Set chmod for shell script.
 ```
 cd front_depth_to_costmap && \
-chmod +x setup_and_launch_auto.sh && \
+chmod +x setup_and_launch_auto.sh
+```
+
+Launch traversability
+```
 ./setup_and_launch_auto.sh
 ```
 
