@@ -8,6 +8,7 @@ def generate_launch_description():
             executable='traversability_to_occupancygrid_node',
             name='traversability_to_occupancygrid_node',
             output='screen',
-            emulate_tty=True
+            emulate_tty=True,
+            parameters=[{"use_sim_time": False}]
         )
     ])

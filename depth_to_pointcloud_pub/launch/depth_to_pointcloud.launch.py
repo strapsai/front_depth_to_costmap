@@ -8,6 +8,6 @@ def generate_launch_description():
             executable='depth_to_pointcloud_node',
             name='depth_to_pointcloud_node',
             output='screen',
-            emulate_tty=True
+            emulate_tty=True,
         )
     ])

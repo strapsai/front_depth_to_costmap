@@ -1,4 +1,11 @@
-# ROS 2 costmap generated from image-based traversability  (for AGX ORIN)
+# ROS 2 Traversability-Based Costmap (for Jetson AGX Orin)
+
+Generate costmaps using image-based traversability predictions.  
+Designed for use with ROS 2 on Jetson AGX Orin (JetPack 6.2).
+
+---
+
+
 ## Installation
 
 You will need to install the following:
@@ -10,6 +17,24 @@ You will need to install the following:
 - Username : alsgh000118
 - Dockerhub password : alsgh001!
 
+
+
+
+## ✅ Quick Start (Non-GUI / Headless)
+
+If you're working without GUI , run this :
+
+```bash
+git clone https://github.com/strapsai/front_depth_to_costmap.git && \
+cd front_depth_to_costmap && \
+chmod +x setup_and_launch_auto.sh && \
+./setup_and_launch_auto.sh
+```
+
+---
+
+<details>
+<summary><strong>✅ Full Setup Guide (with GUI)</strong></summary>
 
 ## Setup
 
@@ -24,7 +49,7 @@ You will need to install the following:
 ### (2) Download the inference model file
 ```bash
 (local)$ cd front_depth_to_costmap/depth_to_pointcloud_pub/depth_to_pointcloud_pub/
-(local)$ wget -O 3_dynamic.plan "https://www.dropbox.com/scl/fi/enco8hvk3g8625k0ql0er/3_dynamic.plan?rlkey=v3qt0anisfueyehx6y2due8e3&st=8szhpe7g&dl=1" 
+(local)$ wget -O traversability_model.plan "https://www.dropbox.com/scl/fi/enco8hvk3g8625k0ql0er/3_dynamic.plan?rlkey=v3qt0anisfueyehx6y2due8e3&st=8szhpe7g&dl=1" 
 ```
 
 ### (3) Build the Docker Container
