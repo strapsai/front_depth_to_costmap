@@ -35,25 +35,52 @@ if [[ "$(docker ps -aq -f name=$CONTAINER_NAME)" != "" ]]; then
   fi
 else
   echo "[INFO] Container does not exist. Running for the first time..."
-  cd docker
-  chmod +x run_mhlee-rcv-dtc-0.5.sh
-  ./run_mhlee-rcv-dtc-0.5.sh
+  mkdir -p .etc && pushd .etc > /dev/null
+  ln -sf /etc/passwd .
+  ln -sf /etc/shadow .
+  ln -sf /etc/group .
+  popd > /dev/null
+
+  WORKDIR_HOST=$(pwd)
+  CONTAINER_WORKDIR="/home/ros/workspace/src/front_depth_to_costmap"
+
+  RUN_COMMAND="docker run \
+    --name $CONTAINER_NAME \
+    --ulimit rtprio=99 \
+    --cap-add=sys_nice \
+    --privileged \
+    --net=host \
+    --ipc=host \
+    --runtime=nvidia \
+    -e HOST_USERNAME=$(whoami) \
+    -v$WORKDIR_HOST:$CONTAINER_WORKDIR \
+    -w $CONTAINER_WORKDIR \
+    -d $IMAGE_NAME tail -f /dev/null"
+
+  echo -e "[setup_and_launch_auto.sh]: \e[1;32mRunning container...\n\e[0;35m$RUN_COMMAND\e[0m"
+  eval $RUN_COMMAND
 fi
+
+echo "[INFO] Waiting for container to start..."
+while [[ "$(docker inspect -f '{{.State.Running}}' $CONTAINER_NAME 2>/dev/null)" != "true" ]]; do
+  sleep 1
+done
+
 
 # === [4] Run setup + build + launch inside container ===
 docker exec -it $CONTAINER_NAME bash -c "
   set -e
   cd /home/ros/workspace
   source /opt/ros/humble/setup.bash
+  source install/setup.bash || true
 
-  if [ ! -d install ]; then
-    echo '[INFO] No install/ directory found. Starting build...'
+  echo '[INFO] Attempting launch...'
+  if ! ros2 launch depth_to_pointcloud_pub traversability_to_occupancygrid.launch.py; then
+    echo '[WARN] Launch failed. Doing clean rebuild...'
+    rm -rf build install log
     colcon build --symlink-install
-  else
-    echo '[INFO] Workspace already built. Skipping build.'
+    source install/setup.bash
+    echo '[INFO] Retrying launch...'
+    ros2 launch depth_to_pointcloud_pub traversability_to_occupancygrid.launch.py
   fi
-
-  source install/setup.bash
-  echo '[INFO] Launching ROS2...'
-  ros2 launch depth_to_pointcloud_pub traversability_to_occupancygrid.launch.py
 "

@@ -183,7 +183,7 @@ class TraversabilitytoOccupancygridNode(Node):
             raise # 컨텍스트 없이는 진행할 수 없으므로 에러 발생
 
         # -------------------- Parameter for inference --------------------
-        self.trt_engine_path = "/home/ros/workspace/src/front_depth_to_costmap/depth_to_pointcloud_pub/depth_to_pointcloud_pub/4_v2_dynamic.plan"
+        self.trt_engine_path = "/home/ros/workspace/src/front_depth_to_costmap/depth_to_pointcloud_pub/depth_to_pointcloud_pub/traversability_model.plan"
         self.engine = load_trt_engine(self.trt_engine_path)
         self.execution_context = self.engine.create_execution_context()
         self.inputs, self.outputs, self.bindings, self.stream = allocate_trt_buffers(self.engine)
@@ -340,24 +340,9 @@ class TraversabilitytoOccupancygridNode(Node):
         depth_m_right[depth_m_right < 0.1] = 0.0      
         depth_m_right[depth_m_right > 3.0] = 0.0      
 
-        # self.get_logger().info(f"Odom pose: position=({pos.x:.2f}, {pos.y:.2f}, {pos.z:.2f}), orientation=({ori.x:.2f}, {ori.y:.2f}, {ori.z:.2f}, {ori.w:.2f})")
-
-        # inpaint filter 적용
-
-        # mask_left = ((depth_m_left < 0.1) | (depth_m_left > 5.0)).astype(np.uint8) * 255
-        # mask_right = ((depth_m_right < 0.1) | (depth_m_right > 5.0)).astype(np.uint8) * 255
-
-        # depth_m_left = cv2.inpaint(depth_m_left, mask_left, 7, cv2.INPAINT_TELEA)
-        # depth_m_right = cv2.inpaint(depth_m_right, mask_right, 7, cv2.INPAINT_TELEA)
-
-
         # gaussian filter 적용
         depth_m_left = cv2.GaussianBlur(depth_m_left, (5,5), 0)
         depth_m_right = cv2.GaussianBlur(depth_m_right, (5,5), 0)
-
-        # # median filter 적용
-        # depth_m_left = cv2.medianBlur(depth_m_left, 5)
-        # depth_m_right = cv2.medianBlur(depth_m_right, 5)
 
         depth_m_left = torch.tensor(depth_m_left, device=self.device)
         depth_m_right = torch.tensor(depth_m_right, device=self.device)
@@ -369,17 +354,6 @@ class TraversabilitytoOccupancygridNode(Node):
         ori = msg_odom.pose.pose.orientation
         T_odom = self.transform_to_matrix(pos, ori) 
         T_odom_gpu = torch.tensor(T_odom, dtype=torch.float32, device=self.device) 
-
-
-        ####### image debuging#######
-        # depth_np_left = depth_m_left.detach().cpu().numpy()
-        # depth_np_right = depth_m_right.detach().cpu().numpy()
-
-        # img_msg_left = self.bridge.cv2_to_imgmsg(depth_np_left, encoding='32FC1')
-        # img_msg_right = self.bridge.cv2_to_imgmsg(depth_np_right, encoding='32FC1')
-        # self.pub_image_left.publish(img_msg_left)
-        # self.pub_image_right.publish(img_msg_right)
-        ####### image debuging#######
 
         # -- GPU start -- 
         pts_left_body_gpu  = self.depth_to_pts_frame_body(depth_m_left, self.K_frontleft_depth, self.T_body_to_frontleft_depth)
@@ -400,7 +374,7 @@ class TraversabilitytoOccupancygridNode(Node):
         
         # -- GPU end -- 
         
-        self.resize_map_cpu(image_left_cpu, image_right_cpu, traversability_left, traversability_right )
+        # self.resize_map_cpu(image_left_cpu, image_right_cpu, traversability_left, traversability_right )
         points_final_cpu = points_final.cpu().numpy()
 
         og = self.pointcloud_with_traversability_to_occupancy_grid(stamp=stamp, 
@@ -411,17 +385,6 @@ class TraversabilitytoOccupancygridNode(Node):
             center_xy=(pos.x, pos.y), 
             z = pos.z
             )
-
-        # points_final_cpu = pts_with_traversability_downsampled.cpu().numpy()
-
-        # og = self.pointcloud_with_traversability_to_occupancy_grid(stamp=stamp, 
-        # frame=self.body_frame, 
-        # pts_with_t=points_final_cpu,
-        # resolution=0.1, 
-        # grid_size=150, 
-        # center_xy=(0.0,0.0), 
-        # )
-
 
         # pc = self.build_pc(msg_leftdepth.header.stamp, self.odom_frame, points_final_cpu[:, :3])
         # self.pub_accum.publish(pc)
@@ -621,19 +584,6 @@ class TraversabilitytoOccupancygridNode(Node):
         np.minimum.at(grid, flat_indices, traversability_value)
         grid[grid == 101] = -1
         grid = grid.reshape((grid_size, grid_size)).astype(np.int8)
-
-        # Filtering
-        # mask = (grid == -1).astype(np.uint8) 
-            
-        # grid_for_inpaint = grid.copy()
-        # grid_for_inpaint[mask == 1] = 0
-        # grid_for_inpaint = ((grid_for_inpaint + 1) * 2).clip(0, 255).astype(np.uint8)
-
-        # inpainted = cv2.inpaint(grid_for_inpaint, mask, inpaintRadius=3, flags=cv2.INPAINT_TELEA)
-        # result = (inpainted.astype(np.float32) / 2) - 1
-        # result = result.astype(np.int8)
-        # grid = result
-        # Filtering
 
         og = OccupancyGrid()
         og.header.stamp = stamp.to_msg()
