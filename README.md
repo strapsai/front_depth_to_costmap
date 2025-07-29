@@ -20,7 +20,7 @@ You will need to install the following:
 
 
 
-## ✅ Quick Start (Non-GUI / Headless)
+## ✅ Quick Start (Non-GUI)
 
 If you're working without GUI , run this :
 
