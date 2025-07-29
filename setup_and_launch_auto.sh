@@ -26,14 +26,26 @@ fi
 
 # === [3] Run container if needed ===
 CONTAINER_NAME="front_traversability"
+WORKDIR_HOST=$(pwd)
+CONTAINER_WORKDIR="/home/ros/workspace/src/front_depth_to_costmap"
+
+
 if [[ "$(docker ps -aq -f name=$CONTAINER_NAME)" != "" ]]; then
   if [[ "$(docker ps -q -f name=$CONTAINER_NAME)" == "" ]]; then
     echo "[INFO] Container exists but not running. Starting..."
     docker start $CONTAINER_NAME
-  else
-    echo "[INFO] Container is already running."
   fi
-else
+
+  echo "[INFO] Checking if container mount is still valid..."
+  if ! docker exec $CONTAINER_NAME test -d "$CONTAINER_WORKDIR"; then
+    echo "[WARN] Mount path invalid inside container. Removing and recreating container..."
+    docker rm -f $CONTAINER_NAME
+  else
+    echo "[INFO] Container is already running. Mount valid."
+  fi
+fi
+
+if [[ "$(docker ps -aq -f name=$CONTAINER_NAME)" == "" ]]; then
   echo "[INFO] Container does not exist. Running for the first time..."
   mkdir -p .etc && pushd .etc > /dev/null
   ln -sf /etc/passwd .
@@ -41,8 +53,6 @@ else
   ln -sf /etc/group .
   popd > /dev/null
 
-  WORKDIR_HOST=$(pwd)
-  CONTAINER_WORKDIR="/home/ros/workspace/src/front_depth_to_costmap"
 
   RUN_COMMAND="docker run \
     --name $CONTAINER_NAME \
