@@ -15,7 +15,7 @@ else
 fi
 
 # === [2] Check Docker image ===
-IMAGE_NAME="alsgh000118/rcv-dtc:0.51"
+IMAGE_NAME="theairlab/darpa-triage:jp6.1-05a-spot"
 if [[ "$(docker images -q $IMAGE_NAME 2> /dev/null)" == "" ]]; then
   echo "[INFO] Docker image not found. Pulling..."
   docker login -u alsgh000118 -p alsgh001!
@@ -78,19 +78,23 @@ done
 
 
 # === [4] Run setup + build + launch inside container ===
-docker exec -it $CONTAINER_NAME bash -c "
+docker exec -it $CONTAINER_NAME bash -i -c '
   set -e
   cd /home/ros/workspace
   source /opt/ros/humble/setup.bash
-  source install/setup.bash || true
+  if [ -f install/setup.bash ]; then
+    source install/setup.bash
+  fi
+  export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+  echo "[DEBUG] RMW_IMPLEMENTATION: $RMW_IMPLEMENTATION"
 
-  echo '[INFO] Attempting launch...'
   if ! ros2 launch depth_to_pointcloud_pub traversability_to_occupancygrid.launch.py; then
-    echo '[WARN] Launch failed. Doing clean rebuild...'
+    echo "[WARN] Rebuilding..."
     rm -rf build install log
     colcon build --symlink-install
     source install/setup.bash
-    echo '[INFO] Retrying launch...'
+    export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+    echo "[INFO] Retrying..."
     ros2 launch depth_to_pointcloud_pub traversability_to_occupancygrid.launch.py
   fi
-"
+'

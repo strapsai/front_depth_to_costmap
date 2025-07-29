@@ -11,7 +11,7 @@ from rclpy.node import Node
 from sensor_msgs.msg import Image, CameraInfo, PointCloud2, PointField
 from ament_index_python.packages import get_package_share_directory
 from cv_bridge import CvBridge
-from transforms3d.quaternions import quat2mat
+# from transforms3d.quaternions import quat2mat
 from message_filters import Subscriber, ApproximateTimeSynchronizer, Cache
 from visualization_msgs.msg import Marker
 
@@ -37,6 +37,8 @@ from geometry_msgs.msg import PointStamped # RViz 시각화를 위한 PointStamp
 from std_msgs.msg import Header # PointStamped의 header를 채우기 위해 필요
 from rclpy.executors import MultiThreadedExecutor, SingleThreadedExecutor # MultiThreadedExecutor 임포트
 import threading
+from scipy.spatial.transform import Rotation as R
+
 
 
 
@@ -374,7 +376,7 @@ class TraversabilitytoOccupancygridNode(Node):
         
         # -- GPU end -- 
         
-        # self.resize_map_cpu(image_left_cpu, image_right_cpu, traversability_left, traversability_right )
+        self.resize_map_cpu(image_left_cpu, image_right_cpu, traversability_left, traversability_right )
         points_final_cpu = points_final.cpu().numpy()
 
         og = self.pointcloud_with_traversability_to_occupancy_grid(stamp=stamp, 
@@ -657,20 +659,27 @@ class TraversabilitytoOccupancygridNode(Node):
         
     @staticmethod
     def transform_to_matrix(position, orientation) -> np.ndarray:
-        import transforms3d
+        # import transforms3d
         T = np.eye(4)
 
         T[0, 3] = position.x
         T[1, 3] = position.y
         T[2, 3] = position.z
 
-        quat = [orientation.w,
-                orientation.x,
-                orientation.y,
-                orientation.z]
-        R = transforms3d.quaternions.quat2mat(quat)
+        # quat = [orientation.w,
+        #         orientation.x,
+        #         orientation.y,
+        #         orientation.z]
 
-        T[:3, :3] = R
+        # R = transforms3d.quaternions.quat2mat(quat)
+
+        quat = [orientation.x,
+                orientation.y,
+                orientation.z,
+                orientation.w]
+        rot_mat = R.from_quat(quat).as_matrix()        
+
+        T[:3, :3] = rot_mat
 
         return T 
     
