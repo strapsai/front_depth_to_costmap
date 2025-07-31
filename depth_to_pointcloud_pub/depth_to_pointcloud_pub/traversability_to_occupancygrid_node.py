@@ -281,7 +281,7 @@ class TraversabilitytoOccupancygridNode(Node):
             return
          
         now = self.get_clock().now()
-        self.get_logger().info(f"[TIMER] Triggered at {now.to_msg().sec}.{now.to_msg().nanosec}")
+        # self.get_logger().info(f"[TIMER] Triggered at {now.to_msg().sec}.{now.to_msg().nanosec}")
         dl = self.c_left .getElemBeforeTime(now)
         dr = self.c_right.getElemBeforeTime(now)
         rl = self.c_rgbL.getElemBeforeTime(now)
@@ -313,7 +313,7 @@ class TraversabilitytoOccupancygridNode(Node):
         try:
             # 이미 생성된 컨텍스트를 현재 스레드에 push (활성화)
             self.pycuda_context.push() 
-            self.get_logger().debug("PyCUDA Context pushed in callback.")
+            # self.get_logger().debug("PyCUDA Context pushed in callback.")
         except Exception as e:
             self.get_logger().error(f"Failed to push PyCUDA Context in callback: {e}")
             # 컨텍스트 활성화 실패 시, GPU 작업은 불가능하므로 여기서 리턴하거나 1예외 처리
@@ -376,7 +376,7 @@ class TraversabilitytoOccupancygridNode(Node):
         
         # -- GPU end -- 
         
-        self.resize_map_cpu(image_left_cpu, image_right_cpu, traversability_left, traversability_right )
+        # self.resize_map_cpu(image_left_cpu, image_right_cpu, traversability_left, traversability_right )
         points_final_cpu = points_final.cpu().numpy()
 
         og = self.pointcloud_with_traversability_to_occupancy_grid(stamp=stamp, 
@@ -396,7 +396,8 @@ class TraversabilitytoOccupancygridNode(Node):
 
         try:
             self.pycuda_context.pop()
-            self.get_logger().info("PyCUDA Context popped in callback.")
+            # self.get_logger().info("PyCUDA Context pop
+            # ped in callback.")
         except Exception as e:
             self.get_logger().error(f"Failed to pop PyCUDA Context in callback: {e}")
 
@@ -404,7 +405,7 @@ class TraversabilitytoOccupancygridNode(Node):
 # ────────────────────────────────────────────────────────────────────────────────────────────────
 # ──────────────────────────────── depth Image → 3-D 포인트 변환 ────────────────────────────────────
 # ────────────────────────────────────────────────────────────────────────────────────────────────
-    @measure_time
+    # # @measure_time
     def depth_to_pts_frame_body(self, depth_m: torch.Tensor, K : torch.Tensor, T: torch.Tensor) -> torch.Tensor:
        
         # 픽셀 그리드 생성
@@ -431,7 +432,7 @@ class TraversabilitytoOccupancygridNode(Node):
 # ──────────────────────────────── Traversability 함수 ──────────────────────────────────────────
 # ────────────────────────────────────────────────────────────────────────────────────────────────
 
-    @measure_time
+    # @measure_time
     def image_to_similarity(self, msg_leftrgb, msg_rightrgb):       
 
         image_left_cv = self.bridge.imgmsg_to_cv2(msg_leftrgb, "bgr8")
@@ -460,13 +461,13 @@ class TraversabilitytoOccupancygridNode(Node):
         resized_map_left = (resized_map_left + 1.0) / 2.0
         resized_map_right = (resized_map_right + 1.0) / 2.0
 
-        self.get_logger().info(
-        f"[SIMILARITY RANGE] Left: min={resized_map_left.min().item():.4f}, max={resized_map_left.max().item():.4f} | "
-        f"Right: min={resized_map_right.min().item():.4f}, max={resized_map_right.max().item():.4f}"
-    )
+        # self.get_logger().info(
+        # f"[SIMILARITY RANGE] Left: min={resized_map_left.min().item():.4f}, max={resized_map_left.max().item():.4f} | "
+        # f"Right: min={resized_map_right.min().item():.4f}, max={resized_map_right.max().item():.4f}"
+    # )
 
         dt_ms = (t_infer - t_preprocess) * 1_000   
-        self.get_logger().info(f'[Ineference processing time] {dt_ms:.2f} ms 소요')
+        # self.get_logger().info(f'[Ineference processing time] {dt_ms:.2f} ms 소요')
         
 
         return image_left_cv, image_right_cv, resized_map_left.to(self.device), resized_map_right.to(self.device)
@@ -474,7 +475,7 @@ class TraversabilitytoOccupancygridNode(Node):
 # ────────────────────────────────────────────────────────────────────────────────────────────────
 # ──────────────────────────────── Traversability projection 함수 ───────────────────────────
 # ────────────────────────────────────────────────────────────────────────────────────────────────
-    @measure_time
+    # @measure_time
     def merge_traversability_to_pointcloud_frame_body(self, pts_body: torch.Tensor, traversability_img: torch.Tensor, K_rgb : torch.Tensor, T_rgb_to_body : torch.Tensor) -> Optional[torch.Tensor]:
         
         N = pts_body.shape[0]
@@ -507,7 +508,7 @@ class TraversabilitytoOccupancygridNode(Node):
 # ────────────────────────────────────────────────────────────────────────────────────────────────  
 
     @staticmethod
-    @measure_time
+    # @measure_time
     def voxel_downsample_mean_traversability(points_with_t_gpu: torch.Tensor, voxel_size: float) -> torch.Tensor:
         """
         PyTorch 텐서 연산만으로 Voxel Grid의 중심점과 트래버서빌리티를 찾아 다운샘플링합니다.
@@ -555,7 +556,7 @@ class TraversabilitytoOccupancygridNode(Node):
 # ──────────────────────────────── Occupancygrid 관련 함수 ──────────────────────────────────────────
 # ────────────────────────────────────────────────────────────────────────────────────────────────
     @staticmethod
-    @measure_time
+    # @measure_time
     def pointcloud_with_traversability_to_occupancy_grid(stamp, frame: str, pts_with_t: np.ndarray, resolution, grid_size, center_xy, z):
         """ Parameters
         resolution: 0.05m
@@ -600,7 +601,7 @@ class TraversabilitytoOccupancygridNode(Node):
         
         return og
 
-    @measure_time
+    # @measure_time
     def resize_map_cpu(self, image_left_cv, image_right_cv, resized_map_left, resized_map_right):
 
         # GPU 텐서를 CPU NumPy 배열로 변환
@@ -686,7 +687,7 @@ class TraversabilitytoOccupancygridNode(Node):
     
     # ───────────── numpy 포인트 → PointCloud2 메시지 ─────────────
     @staticmethod
-    @measure_time
+    # @measure_time
     def build_pc(stamp, frame: str, points: np.ndarray) -> PointCloud2:
         fields = [
             PointField(name="x", offset=0, datatype=PointField.FLOAT32, count=1),
