@@ -74,7 +74,7 @@ This script will do:
     
     </details>
     
-- ⚙️ Build the workspace and launch the node
+- ⚙️ Build the workspace if the workspace is not yet built and launch the node
 
 ---
 
