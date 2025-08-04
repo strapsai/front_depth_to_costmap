@@ -1,1 +1,1 @@
-"This folder stores the tensorRT traversability model."
+"This folder is used for storing the tensorRT traversability model"
