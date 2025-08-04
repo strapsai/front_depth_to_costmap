@@ -36,18 +36,18 @@ Launch traversability
 ```
 This script will do:
 
-- ⚙️ If the TensorRT model is missing, it will be downloaded from [**`link(dropbox)`**](https://www.dropbox.com/scl/fi/xxjtu4hzdb5f8qwu27ack/traversability_model.plan?rlkey=8n7udgy6l8vlt3sm3fo57odiy&st=aukug1k4&dl=1)  
+- ⚙️ 1. If the TensorRT model is missing, it will be downloaded from [**`link(dropbox)`**](https://www.dropbox.com/scl/fi/xxjtu4hzdb5f8qwu27ack/traversability_model.plan?rlkey=8n7udgy6l8vlt3sm3fo57odiy&st=aukug1k4&dl=1)  
   → must be saved to: `traversability_model/traversability_model.plan` (in the cloned GitHub folder)  
   ![Model Directory](model_directory_image.png)
 
 
-- ⚙️ Pull the required Docker image (**`theairlab/dtc:jp6.1-01-torch`**) if it's not already pulled
+- ⚙️ 2. Pull the required Docker image (**`theairlab/dtc:jp6.1-01-torch`**) if it's not already pulled
 
-- ⚙️ Automatically run the container (container name : **`front_traversability`**)
+- ⚙️ 3. Automatically run the container (container name : **`front_traversability`**)
 
-- ⚙️ Install **ROS 2 Humble** inside the container if not already installed
+- ⚙️ 4. Install **ROS 2 Humble** inside the container if not already installed
   <details>
-      <summary>ROS2 humble installation commands by bash on AGX container</summary>
+      <summary>(If needed) ROS 2 Humble installation script for AGX container (just copy and paste into the container terminal) </summary>
 
       bash -c '
       set -e
@@ -74,7 +74,7 @@ This script will do:
     
     </details>
     
-- ⚙️ Build the workspace if the workspace is not yet built and launch the node
+- ⚙️ 5. Build the workspace if the workspace is not yet built and launch the node
 
 ---
 
