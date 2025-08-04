@@ -73,8 +73,6 @@ This script will do:
 
     
     </details>
-  <br>
-
     
 - ⚙️ Build the workspace and launch the node
 
