@@ -34,7 +34,7 @@ Launch traversability
 ```
 ./setup_and_launch_auto.sh
 ```
-This script will:
+This script will do:
 
 - ⚙️ If the TensorRT model is missing, it will be downloaded from [**`link(dropbox)`**](https://www.dropbox.com/scl/fi/xxjtu4hzdb5f8qwu27ack/traversability_model.plan?rlkey=8n7udgy6l8vlt3sm3fo57odiy&st=aukug1k4&dl=1)  
   → must be saved to: `traversability_model/traversability_model.plan` (in the cloned GitHub folder)  
