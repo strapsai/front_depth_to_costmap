@@ -13,9 +13,9 @@ You will need to install the following:
 - Docker
 - NVIDIA Container Toolkit
 - NVIDIA CUDA Toolkit
-- Dockerhub ID : alsgh000118@naver.com
-- Username : alsgh000118
-- Dockerhub password : alsgh001!
+- ~~Dockerhub ID : alsgh000118@naver.com~~
+- ~~Username : alsgh000118~~
+- ~~Dockerhub password : alsgh001!~~
 
 
 
