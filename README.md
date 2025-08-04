@@ -34,6 +34,47 @@ Launch traversability
 ```
 ./setup_and_launch_auto.sh
 ```
+This script will:
+
+- ⚙️ If the TensorRT model is missing, it will be downloaded from [**`link(dropbox)`**](https://www.dropbox.com/scl/fi/xxjtu4hzdb5f8qwu27ack/traversability_model.plan?rlkey=8n7udgy6l8vlt3sm3fo57odiy&st=aukug1k4&dl=1)  
+  → must saved to: `traversability_model/traversability_model.plan` (in the cloned GitHub folder)  
+
+- ⚙️ Pull the required Docker image (**`theairlab/dtc:jp6.1-01-torch`**) if it's not already pulled
+
+- ⚙️ Automatically run the container (container name : **`front_traversability`**)
+
+- ⚙️ Install **ROS 2 Humble** inside the container if not already installed
+  <details>
+      <summary>ROS2 humble installation commands by bash on AGX container</summary>
+
+      bash -c '
+      set -e
+
+      apt update && apt install -y curl gnupg lsb-release locales
+
+      locale-gen en_US en_US.UTF-8
+      update-locale LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8
+      export LANG=en_US.UTF-8
+
+      curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.asc | \
+        gpg --dearmor -o /usr/share/keyrings/ros-archive-keyring.gpg
+
+      echo "deb [arch=arm64 signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] \
+        http://packages.ros.org/ros2/ubuntu $(lsb_release -cs) main" > /etc/apt/sources.list.d/ros2.list
+
+      apt update
+      apt install -y ros-humble-desktop python3-colcon-common-extensions
+
+      echo "source /opt/ros/humble/setup.bash" >> ~/.bashrc
+      source /opt/ros/humble/setup.bash
+      '
+
+    
+    </details>
+  <br>
+
+    
+- ⚙️ Build the workspace and launch the node
 
 ---
 

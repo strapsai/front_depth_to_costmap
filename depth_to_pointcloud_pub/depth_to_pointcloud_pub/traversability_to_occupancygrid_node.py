@@ -185,7 +185,7 @@ class TraversabilitytoOccupancygridNode(Node):
             raise # 컨텍스트 없이는 진행할 수 없으므로 에러 발생
 
         # -------------------- Parameter for inference --------------------
-        self.trt_engine_path = "/home/ros/workspace/src/front_depth_to_costmap/depth_to_pointcloud_pub/depth_to_pointcloud_pub/traversability_model.plan"
+        self.trt_engine_path = "/home/ros/workspace/src/front_depth_to_costmap/traversability_model/traversability_model.plan"
         self.engine = load_trt_engine(self.trt_engine_path)
         self.execution_context = self.engine.create_execution_context()
         self.inputs, self.outputs, self.bindings, self.stream = allocate_trt_buffers(self.engine)
