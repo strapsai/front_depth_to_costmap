@@ -543,11 +543,16 @@ class TraversabilitytoOccupancygridNode(Node):
         sum_xyz.scatter_add_(0, inverse_indices.unsqueeze(1).expand(-1, 3), points_with_t_gpu[:, :3])
         mean_xyz = sum_xyz / counts.unsqueeze(1)
 
-        min_t = torch.full((num_unique_voxels, ), float('inf'), device=points_with_t_gpu.device)
-        min_t = min_t.scatter_reduce(0, inverse_indices, points_with_t_gpu[:, 3], reduce='amin')
+        # min_t = torch.full((num_unique_voxels, ), float('inf'), device=points_with_t_gpu.device)
+        # min_t = min_t.scatter_reduce(0, inverse_indices, points_with_t_gpu[:, 3], reduce='amin')
 
-        result = torch.cat([mean_xyz, min_t.unsqueeze(1)], dim=1)
+        # result = torch.cat([mean_xyz, min_t.unsqueeze(1)], dim=1)
+        
+        sum_t = torch.zeros((num_unique_voxels,), device=points_with_t_gpu.device)
+        sum_t.scatter_add_(0, inverse_indices, points_with_t_gpu[:, 3])
+        mean_t = sum_t / counts
 
+        result = torch.cat([mean_xyz, mean_t.unsqueeze(1)], dim=1)
         
         return result
 
