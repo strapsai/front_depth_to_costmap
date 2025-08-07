@@ -90,9 +90,9 @@ depth_to_pointcloud_pub/launch/traversability_to_occupancygrid.launch.py
 
 Inside that file, modify the parameter:
 
-![(topic_change_image.png)](../topic_changing_image.png)
+![launch script for topic change](topic_change_image.png)
 ```bash
-{"spot_id": "spot1"}  # or "spot2"
+{"spot_id": "spot1"}  # you can choose 'spot1' or "spot2"
 ```
 
 
