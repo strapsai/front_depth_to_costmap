@@ -78,6 +78,29 @@ This script will do:
 
 ---
 
+
+
+Note:
+If you want to use spot1 or spot2 topics, you have to set the parameter in the launch file:
+
+```bash
+depth_to_pointcloud_pub/launch/traversability_to_occupancygrid.launch.py
+```
+
+
+Inside that file, modify the parameter:
+
+![(topic_change_image.png)](../topic_changing_image.png)
+```bash
+{"spot_id": "spot1"}  # or "spot2"
+```
+
+
+
+
+
+
+
 <details>
 <summary><strong>✅ Full Setup Guide (with GUI)</strong></summary>
 
