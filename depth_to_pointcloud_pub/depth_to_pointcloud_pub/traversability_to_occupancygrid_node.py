@@ -62,8 +62,8 @@ def load_intrinsic(yaml_name: str, key: str) -> np.ndarray:
 # ────────────────────── Inference Utilities ──────────────────────
 
 def prepare_image(image_left, image_right, input_size=(512, 512)):
-    original_size_left = image_left.size
-    original_size_right = image_right.size
+    original_size_left, original_size_right = None, None
+    tensor_left, tensor_right = None, None
         
 
     transform = transforms.Compose([
@@ -72,10 +72,21 @@ def prepare_image(image_left, image_right, input_size=(512, 512)):
         transforms.Normalize(mean=[103.939 / 255, 116.779 / 255, 123.68 / 255],
                             std=[0.229, 0.224, 0.225]),
     ])
-    tensor_left = transform(image_left).unsqueeze(0).contiguous().cuda()
-    tensor_right = transform(image_right).unsqueeze(0).contiguous().cuda()
+
+    if image_left:
+        original_size_left = image_left.size
+        tensor_left = transform(image_left).unsqueeze(0).contiguous().cuda()
+    else:
+        tensor_left = torch.zeros((1, 3, *input_size), dtype=torch.float32, device='cuda')
+
+    if image_right:
+        original_size_right = image_right.size
+        tensor_right = transform(image_right).unsqueeze(0).contiguous().cuda()
+    else:
+        tensor_right = torch.zeros((1, 3, *input_size), dtype=torch.float32, device='cuda')
 
     batched_tensor = torch.cat([tensor_left, tensor_right], dim=0).contiguous().cuda()
+
 
     return batched_tensor, original_size_left, original_size_right
 
@@ -126,7 +137,7 @@ def infer_trt_image(context, bindings, inputs, outputs, stream, input_tensor):
     t_3 = time.perf_counter()
 
 
-    output_tensor = torch.empty((2, 1, 512, 512), dtype=torch.float32, device='cuda')  # ← 원하는 shape으로
+    output_tensor = torch.empty((2, 1, 512, 512), dtype=torch.float32, device='cuda') 
     cuda.memcpy_dtod_async(
         dest=output_tensor.data_ptr(),
         src=outputs[0][1],
@@ -160,6 +171,7 @@ class TraversabilitytoOccupancygridNode(Node):
             self.get_logger().error(f"Failed to create/push PyCUDA Context: {e}")
             raise 
 
+        # self.trt_engine_path = "/home/ros/workspace/src/front_depth_to_costmap/traversability_model/traversability_model.plan"
         self.trt_engine_path = "/home/dtc/airlab_ws/autonomy_ws/src/costmap/front_depth_to_costmap/traversability_model/traversability_model.plan"
         self.engine = load_trt_engine(self.trt_engine_path)
         self.execution_context = self.engine.create_execution_context()
@@ -202,32 +214,68 @@ class TraversabilitytoOccupancygridNode(Node):
         self.sub_leftrgb    = Subscriber(self, Image, spot_topics["rgb_left"])
         self.sub_rightrgb   = Subscriber(self, Image, spot_topics["rgb_right"])
 
-        self.c_left  = Cache(self.sub_leftdepth,  3)
-        self.c_right = Cache(self.sub_rightdepth, 3)
-        self.c_rgbL  = Cache(self.sub_leftrgb,    3)
-        self.c_rgbR  = Cache(self.sub_rightrgb,   3)
+        self.c_left  = Cache(self.sub_leftdepth,  5)
+        self.c_right = Cache(self.sub_rightdepth, 5)
+        self.c_rgbL  = Cache(self.sub_leftrgb,    5)
+        self.c_rgbR  = Cache(self.sub_rightrgb,   5)
         self.c_odom  = Cache(self.sub_odom,      20)
         self.is_processing = False
         self.timer_handle = self.create_timer(0.1, self.sync_timer_cb)  # 10Hz 타이머
+
+        self.message_timeout = self.declare_parameter("message_timeout", 1.0).get_parameter_value().double_value
+        self.get_logger().info(f"Message timeout set to: {self.message_timeout} seconds")
 
 
     def sync_timer_cb(self):
         if self.is_processing:
             return
-         
+
         now = self.get_clock().now()
-        dl = self.c_left .getElemBeforeTime(now)
-        dr = self.c_right.getElemBeforeTime(now)
-        rl = self.c_rgbL.getElemBeforeTime(now)
-        rr = self.c_rgbR.getElemBeforeTime(now)
-        od = self.c_odom.getElemBeforeTime(now)
+        
+        def get_valid_msg(cache: Cache, topic_name: str) -> Optional[Image | Odometry]:
+            msg = cache.getElemBeforeTime(now)
+            if msg is None:
+                return None
+            
+            msg_time = rclpy.time.Time.from_msg(msg.header.stamp)
+            age = (now - msg_time).nanoseconds / 1e9
+            if age > self.message_timeout:
+                self.get_logger().warn(f"Message on topic '{topic_name}' is too old ({age:.2f}s > {self.message_timeout}s). Discarding.")
+                return None
+            return msg
+        
+        # 1. Check the odom message
+        od_msg = get_valid_msg(self.c_odom, "Odom")
+        if od_msg is None:
+            self.get_logger().error("Odom message is missing or stale. Cannot proceed.")
+            return
 
-        if None in (dl, dr, rl, rr, od):
-         return
+        # 2. Check the validity of each camera message.
+        dl_msg = get_valid_msg(self.c_left, "Left Depth")
+        dr_msg = get_valid_msg(self.c_right, "Right Depth")
+        rl_msg = get_valid_msg(self.c_rgbL, "Left RGB")
+        rr_msg = get_valid_msg(self.c_rgbR, "Right RGB")
 
+        # 3. Check if each side's 'set' (Depth + RGB) is complete.
+        is_left_set_valid = (dl_msg is not None and rl_msg is not None)
+        is_right_set_valid = (dr_msg is not None and rr_msg is not None)
+
+        # 4. If neither side has a complete set, abort the callback for this cycle.
+        if not is_left_set_valid and not is_right_set_valid:
+            self.get_logger().warn("A complete data set (Depth & RGB) is not available for either side. Skipping cycle.")
+            return
+
+        # 5. Pass only data from complete sets to the main callback (pass None for invalid sets).
+        final_dl_msg = dl_msg if is_left_set_valid else None
+        final_rl_msg = rl_msg if is_left_set_valid else None
+        final_dr_msg = dr_msg if is_right_set_valid else None
+        final_rr_msg = rr_msg if is_right_set_valid else None
+        
         self.is_processing = True
 
-        threading.Thread(target=self.process_occupancy, args=(dl, dr, rl, rr, od)).start()
+        threading.Thread(target=self.process_occupancy, args=(
+            final_dl_msg, final_dr_msg, final_rl_msg, final_rr_msg, od_msg
+        )).start()
 
     def process_occupancy(self, dl, dr, rl, rr, od):
         try:
@@ -239,35 +287,53 @@ class TraversabilitytoOccupancygridNode(Node):
 # ──────────────────────────────── Main Callback ──────────────────────────────────────────
 # ────────────────────────────────────────────────────────────────────────────────────────────────
     @measure_time        
-    def occupancy_cb(self, msg_leftdepth : Image, msg_rightdepth : Image, msg_leftrgb : Image, msg_rightrgb : Image, msg_odom : Odometry):        
-        
+    def occupancy_cb(self, msg_leftdepth : Optional[Image], msg_rightdepth : Optional[Image], msg_leftrgb : Optional[Image], msg_rightrgb : Optional[Image], msg_odom : Odometry):        
         try:
             self.pycuda_context.push() 
         except Exception as e:
             self.get_logger().error(f"Failed to push PyCUDA Context in callback: {e}")
             return 
                     
-        stamp = rclpy.time.Time.from_msg(msg_leftrgb.header.stamp)
-
-                
-        depth_raw_left = self.bridge.imgmsg_to_cv2(msg_leftdepth, "passthrough")  
-        depth_raw_right = self.bridge.imgmsg_to_cv2(msg_rightdepth, "passthrough") 
-
-        depth_m_left   = depth_raw_left.astype(np.float32) / 1000.0  
-        depth_m_right   = depth_raw_right.astype(np.float32) / 1000.0  
-
-        depth_m_left[depth_m_left <  0.1] = 0.0      
-        depth_m_left[depth_m_left > 3.0] = 0.0                                                        
-        depth_m_right[depth_m_right < 0.1] = 0.0      
-        depth_m_right[depth_m_right > 3.0] = 0.0      
-
-        depth_m_left = cv2.GaussianBlur(depth_m_left, (5,5), 0)
-        depth_m_right = cv2.GaussianBlur(depth_m_right, (5,5), 0)
-
-        depth_m_left = torch.tensor(depth_m_left, device=self.device)
-        depth_m_right = torch.tensor(depth_m_right, device=self.device)
+        stamp = rclpy.time.Time.from_msg(msg_odom.header.stamp)
 
         image_left_cpu, image_right_cpu, traversability_left, traversability_right = self.image_to_similarity(msg_leftrgb, msg_rightrgb)
+
+        pts_with_traversability_body_list = []
+
+
+        if msg_leftdepth and msg_leftrgb is not None:
+            depth_raw_left = self.bridge.imgmsg_to_cv2(msg_leftdepth, "passthrough")
+            depth_m_left = depth_raw_left.astype(np.float32) / 1000.0
+            depth_m_left[(depth_m_left < 0.1) | (depth_m_left > 3.0)] = 0.0
+            depth_m_left = cv2.GaussianBlur(depth_m_left, (5, 5), 0)
+            depth_m_left_gpu = torch.tensor(depth_m_left, device=self.device)
+
+            pts_left_body_gpu = self.depth_to_pts_frame_body(depth_m_left_gpu, self.K_frontleft_depth, self.T_body_to_frontleft_depth)
+            pts_with_traversability_left = self.merge_traversability_to_pointcloud_frame_body(pts_left_body_gpu, traversability_left, self.K_frontleft_fisheye, self.T_body_to_frontleft_fisheye)
+            
+            if pts_with_traversability_left is not None and pts_with_traversability_left.shape[0] > 0:
+                pts_with_traversability_body_list.append(pts_with_traversability_left)
+        
+        if msg_rightdepth and msg_rightrgb is not None:
+            depth_raw_right = self.bridge.imgmsg_to_cv2(msg_rightdepth, "passthrough")
+            depth_m_right = depth_raw_right.astype(np.float32) / 1000.0
+            depth_m_right[(depth_m_right < 0.1) | (depth_m_right > 3.0)] = 0.0
+            depth_m_right = cv2.GaussianBlur(depth_m_right, (5, 5), 0)
+            depth_m_right_gpu = torch.tensor(depth_m_right, device=self.device)
+        
+            pts_right_body_gpu = self.depth_to_pts_frame_body(depth_m_right_gpu, self.K_frontright_depth, self.T_body_to_frontright_depth)
+            pts_with_traversability_right = self.merge_traversability_to_pointcloud_frame_body(pts_right_body_gpu, traversability_right, self.K_frontright_fisheye, self.T_body_to_frontright_fisheye)
+
+            if pts_with_traversability_right is not None and pts_with_traversability_right.shape[0] > 0:
+                pts_with_traversability_body_list.append(pts_with_traversability_right)
+
+        if not pts_with_traversability_body_list:
+            self.get_logger().warn("No valid point cloud could be generated from available data. Skipping publication.")
+            try:
+                self.pycuda_context.pop()
+            except Exception as e:
+                self.get_logger().error(f"Failed to pop PyCUDA Context in empty callback: {e}")
+            return
 
 
         pos = msg_odom.pose.pose.position
@@ -276,13 +342,8 @@ class TraversabilitytoOccupancygridNode(Node):
         T_odom_gpu = torch.tensor(T_odom, dtype=torch.float32, device=self.device) 
 
         # -- GPU start -- 
-        pts_left_body_gpu  = self.depth_to_pts_frame_body(depth_m_left, self.K_frontleft_depth, self.T_body_to_frontleft_depth)
-        pts_right_body_gpu = self.depth_to_pts_frame_body(depth_m_right, self.K_frontright_depth, self.T_body_to_frontright_depth)
-    
-        pts_with_traversability_left = self.merge_traversability_to_pointcloud_frame_body(pts_left_body_gpu, traversability_left, self.K_frontleft_fisheye, self.T_body_to_frontleft_fisheye)
-        pts_with_traversability_right = self.merge_traversability_to_pointcloud_frame_body(pts_right_body_gpu, traversability_right, self.K_frontright_fisheye, self.T_body_to_frontright_fisheye)
 
-        pts_with_traversability_body = torch.cat([pts_with_traversability_left, pts_with_traversability_right], dim=0) # 지금은 중복된것을 torch.cat으로 했는데 , 보수적인 값으로 추정하면서도 연산에 방해안되는 것으로 바꿔보기(Important)
+        pts_with_traversability_body = torch.cat(pts_with_traversability_body_list, dim=0) 
 
         pts_with_traversability_downsampled = self.voxel_downsample_mean_traversability(pts_with_traversability_body, 0.05)
 
@@ -306,8 +367,6 @@ class TraversabilitytoOccupancygridNode(Node):
             )
 
         self.pub_occup.publish(og)
-
-        
 
         try:
             self.pycuda_context.pop()
@@ -345,13 +404,21 @@ class TraversabilitytoOccupancygridNode(Node):
 # ────────────────────────────────────────────────────────────────────────────────────────────────
 
     # @measure_time
-    def image_to_similarity(self, msg_leftrgb, msg_rightrgb):       
+    def image_to_similarity(self, msg_leftrgb: Optional[Image], msg_rightrgb: Optional[Image]):       
+       
+        if not msg_leftrgb and not msg_rightrgb:
+            return None, None, None, None
 
-        image_left_cv = self.bridge.imgmsg_to_cv2(msg_leftrgb, "bgr8")
-        image_left = PILImage.fromarray(cv2.cvtColor(image_left_cv, cv2.COLOR_BGR2RGB))
+        image_left, image_right = None, None
+        image_left_cv, image_right_cv = None, None
 
-        image_right_cv = self.bridge.imgmsg_to_cv2(msg_rightrgb, "bgr8")
-        image_right = PILImage.fromarray(cv2.cvtColor(image_right_cv, cv2.COLOR_BGR2RGB))
+        if msg_leftrgb:
+                    image_left_cv = self.bridge.imgmsg_to_cv2(msg_leftrgb, "bgr8")
+                    image_left = PILImage.fromarray(cv2.cvtColor(image_left_cv, cv2.COLOR_BGR2RGB))
+                
+        if msg_rightrgb:
+            image_right_cv = self.bridge.imgmsg_to_cv2(msg_rightrgb, "bgr8")
+            image_right = PILImage.fromarray(cv2.cvtColor(image_right_cv, cv2.COLOR_BGR2RGB))
 
         input_tensor, original_size_left, original_size_right = prepare_image(image_left, image_right)
 
@@ -360,15 +427,17 @@ class TraversabilitytoOccupancygridNode(Node):
             self.outputs, self.stream, input_tensor
         )
 
+        resized_map_left, resized_map_right = None, None
 
-        resized_map_left= F.interpolate(result[0:1, :, :, :], size=original_size_left[::-1], mode='bilinear', align_corners=False)
-    
-        resized_map_right = F.interpolate(result[1:2, :, :, :], size=original_size_right[::-1], mode='bilinear', align_corners=False)        
+        if original_size_left:
+            map_left = F.interpolate(result[0:1, :, :, :], size=original_size_left[::-1], mode='bilinear', align_corners=False)
+            resized_map_left = ((map_left + 1.0) / 2.0)
 
-        resized_map_left = (resized_map_left + 1.0) / 2.0
-        resized_map_right = (resized_map_right + 1.0) / 2.0
+        if original_size_right:
+            map_right = F.interpolate(result[1:2, :, :, :], size=original_size_right[::-1], mode='bilinear', align_corners=False)
+            resized_map_right = ((map_right + 1.0) / 2.0)
 
-        return image_left_cv, image_right_cv, resized_map_left.to(self.device), resized_map_right.to(self.device)
+        return image_left_cv, image_right_cv, resized_map_left, resized_map_right
 
 # ────────────────────────────────────────────────────────────────────────────────────────────────
 # ──────────────────────────────── Traversability projection ───────────────────────────
@@ -458,7 +527,7 @@ class TraversabilitytoOccupancygridNode(Node):
         indx, indy, t = indx[mask], indy[mask], t[mask]
 
         grid = np.full(grid_size * grid_size, 101, dtype=np.int16)
-        traversability_value = np.round((1 - t) * 100).astype(np.int16)  # 0이 주행가능, 100이 주행불가능
+        traversability_value = np.round((1 - t) * 100).astype(np.int16)  # 0: traversable, 100: non-traversable
         flat_indices = indy * grid_size + indx
         np.minimum.at(grid, flat_indices, traversability_value)
         grid[grid == 101] = -1
@@ -485,25 +554,8 @@ class TraversabilitytoOccupancygridNode(Node):
     # ───────────── (Optional) similarity map visualization & publish for debugging  ─────────────
     # @measure_time
     def resize_map_cpu(self, image_left_cv, image_right_cv, resized_map_left, resized_map_right):
-
-        similarity_np_left = resized_map_left.squeeze().cpu().numpy()
-        similarity_np_right = resized_map_right.squeeze().cpu().numpy()
-
-        similarity_colored_left = cv2.applyColorMap(
-            (255 - similarity_np_left * 255).astype(np.uint8), cv2.COLORMAP_JET
-        )
-        similarity_colored_right = cv2.applyColorMap(
-            (255 - similarity_np_right * 255).astype(np.uint8), cv2.COLORMAP_JET
-        )
-
-        overlay_left = cv2.addWeighted(image_left_cv, 0.6, similarity_colored_left, 0.4, 0)
-        overlay_right = cv2.addWeighted(image_right_cv, 0.6, similarity_colored_right, 0.4, 0)
-
-            
-        overlay_left  = cv2.rotate(overlay_left,  cv2.ROTATE_90_CLOCKWISE)
-        overlay_right = cv2.rotate(overlay_right, cv2.ROTATE_90_CLOCKWISE)
-        left_image_raw  = cv2.rotate(image_left_cv,  cv2.ROTATE_90_CLOCKWISE)
-        right_image_raw = cv2.rotate(image_right_cv, cv2.ROTATE_90_CLOCKWISE)
+        overlays = []
+        raws = []
 
         def add_label_cv2(img_cv, text):
             labeled_img = img_cv.copy()
@@ -516,21 +568,33 @@ class TraversabilitytoOccupancygridNode(Node):
             cv2.putText(labeled_img, text, position, font, font_scale, color, thickness, lineType=cv2.LINE_AA)
             return labeled_img
 
-        overlay_left_similarity = add_label_cv2(overlay_left, "Frontleft similariy map")
-        overlay_right_similarity = add_label_cv2(overlay_right, "Frontright similarity map")
-        left_image_raw = add_label_cv2(left_image_raw, "Frontleft image")
-        right_image_raw = add_label_cv2(right_image_raw, "Frontright image")        
+        if image_right_cv is not None and resized_map_right is not None:
+            similarity_np = resized_map_right.squeeze().cpu().numpy()
+            similarity_colored = cv2.applyColorMap((255 - similarity_np * 255).astype(np.uint8), cv2.COLORMAP_JET)
+            overlay = cv2.addWeighted(image_right_cv, 0.6, similarity_colored, 0.4, 0)
+            
+            overlays.append(add_label_cv2(cv2.rotate(overlay, cv2.ROTATE_90_CLOCKWISE), "Frontright similarity"))
+            raws.append(add_label_cv2(cv2.rotate(image_right_cv, cv2.ROTATE_90_CLOCKWISE), "Frontright image"))
 
+        if image_left_cv is not None and resized_map_left is not None:
+            similarity_np = resized_map_left.squeeze().cpu().numpy()
+            similarity_colored = cv2.applyColorMap((255 - similarity_np * 255).astype(np.uint8), cv2.COLORMAP_JET)
+            overlay = cv2.addWeighted(image_left_cv, 0.6, similarity_colored, 0.4, 0)
 
-        combined_image_similarity = cv2.hconcat([overlay_right_similarity, overlay_left_similarity])  
-        combined_image_raw = cv2.hconcat([right_image_raw, left_image_raw])  
+            overlays.append(add_label_cv2(cv2.rotate(overlay, cv2.ROTATE_90_CLOCKWISE), "Frontleft similarity"))
+            raws.append(add_label_cv2(cv2.rotate(image_left_cv, cv2.ROTATE_90_CLOCKWISE), "Frontleft image"))
+            
 
-        img_msg_combined_similarity = self.bridge.cv2_to_imgmsg(combined_image_similarity, encoding='bgr8')
-        img_msg_combined_raw = self.bridge.cv2_to_imgmsg(combined_image_raw, encoding='bgr8')
-
-        self.pub_combined_image_similarity.publish(img_msg_combined_similarity)
-        self.pub_combined_image_raw.publish(img_msg_combined_raw)
+        if overlays:
+            combined_similarity = cv2.hconcat(overlays)
+            img_msg_combined_similarity = self.bridge.cv2_to_imgmsg(combined_similarity, encoding='bgr8')
+            self.pub_combined_image_similarity.publish(img_msg_combined_similarity)
         
+        if raws:
+            combined_raw = cv2.hconcat(raws)
+            img_msg_combined_raw = self.bridge.cv2_to_imgmsg(combined_raw, encoding='bgr8')
+            self.pub_combined_image_raw.publish(img_msg_combined_raw)
+
     # ───────────── Convert geometry_msgs/Pose to a 4×4 homogeneous transform  ─────────────
     @staticmethod
     def transform_to_matrix(position, orientation) -> np.ndarray:
